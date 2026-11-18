@@ -25,6 +25,7 @@ STDLIB_ONLY = [
     "minigrid.naming",
     "minigrid.stomp",
     "worker.sandbox",
+    "worker.executor",
 ]
 
 
