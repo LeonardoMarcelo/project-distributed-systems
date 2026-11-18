@@ -34,15 +34,34 @@ def mgmt(method, path, body=None, expect_json=True):
     return None
 
 
-def queue_depth(name):
-    """Mensagens prontas na fila, pela API de gerenciamento."""
+def queue_depth(name, cap=200):
+    """Mensagens prontas na fila, por leitura autoritativa.
+
+    Nao usa `messages_ready` de `GET /api/queues/...`: esse campo vem do coletor
+    de estatisticas do plugin de gerenciamento, que atualiza por intervalo
+    (~5 s por padrao) e atrasa mais ainda sob carga. Medido: 2 s de atraso com a
+    maquina ociosa e acima de 5 s com a suite inteira rodando — o que fazia os
+    testes de profundidade falharem em suite completa e passarem isolados.
+
+    `POST .../get` com `ackmode=ack_requeue_true` le direto do processo da fila,
+    sem intervalo de coleta, e devolve as mensagens para a fila em seguida. E um
+    espiao, nao um consumo: a contagem e imediata e nada se perde.
+
+    Limitacao consciente: conta no maximo `cap` mensagens, e as mensagens
+    espiadas voltam marcadas como reentregues. Suficiente para os testes, que
+    trabalham com dezenas.
+    """
     try:
-        info = mgmt("GET", "/queues/%2F/" + name)
+        got = mgmt("POST", "/queues/%2F/" + name + "/get", {
+            "count": cap,
+            "ackmode": "ack_requeue_true",
+            "encoding": "auto",
+        })
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return 0
         raise
-    return info.get("messages_ready", 0)
+    return len(got or [])
 
 
 def wait_until(predicate, timeout=10.0, interval=0.2):
