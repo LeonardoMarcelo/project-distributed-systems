@@ -23,6 +23,7 @@ from conftest import PROJECT_ROOT
 STDLIB_ONLY = [
     "minigrid.envelope",
     "minigrid.naming",
+    "minigrid.stomp",
 ]
 
 
