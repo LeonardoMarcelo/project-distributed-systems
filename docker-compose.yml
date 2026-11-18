@@ -1,0 +1,51 @@
+name: minigrid
+
+networks:
+  minigrid_net:
+    driver: bridge
+
+volumes:
+  consul_data:
+  rabbitmq_data:
+
+services:
+  # Serviço de nomes e coordenação (item F).
+  # Registro de serviços por health check TTL, KV com lock de sessão para eleição.
+  consul:
+    image: hashicorp/consul:1.19
+    container_name: minigrid-consul
+    command: agent -dev -client=0.0.0.0 -ui -log-level=warn
+    ports:
+      - "8500:8500"
+    volumes:
+      - consul_data:/consul/data
+    networks:
+      - minigrid_net
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  # Middleware orientado a mensagens (item C).
+  # AMQP para os workers em contêiner, STOMP para o worker do host.
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: minigrid-rabbitmq
+    hostname: minigrid-rabbitmq
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # UI de gerenciamento
+      - "61613:61613"   # STOMP
+    volumes:
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - rabbitmq_data:/var/lib/rabbitmq/mnesia
+    networks:
+      - minigrid_net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
