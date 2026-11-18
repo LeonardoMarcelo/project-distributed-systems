@@ -26,6 +26,8 @@ STDLIB_ONLY = [
     "minigrid.stomp",
     "worker.sandbox",
     "worker.executor",
+    "worker.legacy",
+    "minigrid.recipes",
 ]
 
 

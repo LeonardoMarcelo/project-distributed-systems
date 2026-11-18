@@ -1,0 +1,149 @@
+// Interface do middleware MiniGrid (itens A e B do enunciado).
+//
+// Este arquivo e a IDL: a definicao formal da interface entre a aplicacao
+// cliente e o coordenador. O empacotamento dos parametros e feito pelo
+// protobuf — o cliente chama um metodo com tipos da sua linguagem, o framework
+// serializa, transporta sobre HTTP/2 sobre TCP, e desserializa do outro lado.
+// Nada disso aparece no codigo da aplicacao.
+//
+// Transparencias que esta interface oferece:
+//
+//   acesso     — `Submit` e identico para calculo numerico, codigo arbitrario
+//                enviado pelo cliente e servico legado embrulhado. O cliente
+//                nao sabe qual e qual.
+//   localizacao — nao existe campo de endereco em nenhuma mensagem. O cliente
+//                descobre o coordenador lider pelo servico de nomes, e quem
+//                executa a tarefa e escolhido pelo broker.
+//   migracao   — `task_id` e `Watch` continuam valendo depois de a tarefa
+//                trocar de worker.
+//   falhas     — queda do lider e queda do worker sao absorvidas pela
+//                biblioteca do middleware, nao pela aplicacao.
+//
+// A operacao assincrona exigida pelo item B e o par `Submit` + `Watch`:
+// `Submit` devolve um identificador imediatamente, sem esperar a execucao, e
+// `Watch` e um stream de servidor que empurra as mudancas de estado ate o
+// resultado ficar pronto. Nao ha polling no caminho feliz.
+
+syntax = "proto3";
+
+package minigrid;
+
+service MiniGrid {
+  // Assincrona: devolve o identificador na hora, sem esperar a execucao.
+  rpc Submit (SubmitRequest) returns (SubmitReply);
+
+  // Sincronas: consulta pontual de estado e de resultado.
+  rpc GetStatus (TaskId) returns (TaskStatus);
+  rpc GetResult (TaskId) returns (TaskResult);
+
+  // Assincrona: stream de servidor com as transicoes de estado da tarefa.
+  rpc Watch (TaskId) returns (stream TaskEvent);
+
+  // Introspeccao: quem esta registrado no servico de nomes agora.
+  rpc ListWorkers (Empty) returns (WorkerList);
+}
+
+message Empty {}
+
+message SubmitRequest {
+  // Nome da receita no catalogo do cliente. O coordenador nao precisa conhecer
+  // a receita: o que importa e o `code`.
+  string recipe = 1;
+
+  // O codigo-fonte da tarefa. E isto que faz a mobilidade fraca do item E: a
+  // tarefa viaja como codigo acompanhado dos dados de entrada.
+  string code = 2;
+
+  // Dados de entrada, bytes arbitrarios. Limite de 8 MB, validado pelo
+  // coordenador, que recusa com INVALID_ARGUMENT.
+  bytes data = 3;
+
+  // Parametros da receita.
+  map<string, string> params = 4;
+
+  // Capacidades que o worker precisa ter, ex. "legacy:imagemagick". O
+  // coordenador roteia por isto.
+  repeated string requires = 5;
+
+  // Identificacao opcional do cliente, usada pelo interceptador no registro de
+  // origem das chamadas.
+  string client_id = 6;
+}
+
+message SubmitReply {
+  string task_id = 1;
+}
+
+message TaskId {
+  string task_id = 1;
+}
+
+// Estados possiveis de uma tarefa. Sao os mesmos nomes publicados no pub/sub,
+// de proposito: o painel de monitoramento e o `Watch` leem a mesma coisa.
+enum State {
+  STATE_UNSPECIFIED = 0;
+  RECEIVED = 1;   // aceita pelo coordenador e publicada na fila
+  RUNNING = 2;    // algum worker a instanciou e esta executando
+  CHECKPOINT = 3; // progresso persistido
+  MIGRATED = 4;   // devolvida a fila; outro worker vai retomar do checkpoint
+  DONE = 5;
+  FAILED = 6;
+}
+
+message TaskStatus {
+  string task_id = 1;
+  State state = 2;
+  string recipe = 3;
+
+  // Quem executou por ultimo, e em que ambiente. Vazio enquanto a tarefa
+  // espera na fila — e o que torna visivel a heterogeneidade do item D.
+  string worker_id = 4;
+  string arch = 5;          // ex. "x86_64", "aarch64", "arm64"
+  string virt = 6;          // "container" ou "process-vm"
+
+  int32 step = 7;           // ultimo passo concluido
+  int32 resumed_from_step = 8;
+  int32 migrations = 9;     // quantas vezes trocou de worker
+  string error = 10;
+  double submitted_at = 11;
+  double updated_at = 12;
+}
+
+message TaskResult {
+  string task_id = 1;
+  State state = 2;
+  bytes result = 3;
+  map<string, string> meta = 4;
+}
+
+message TaskEvent {
+  string task_id = 1;
+  State state = 2;
+
+  // Nome textual do evento como publicado no pub/sub ("running", "checkpoint",
+  // "migrated", ...). Redundante com `state` de proposito: o painel exibe o
+  // texto, o cliente decide pelo enum.
+  string kind = 3;
+
+  string worker_id = 4;
+  string arch = 5;
+  string virt = 6;
+  int32 step = 7;
+  string reason = 8;        // motivo da migracao: "shutdown" ou "overload"
+  string error = 9;
+  double at = 10;
+}
+
+message Worker {
+  string id = 1;
+  string arch = 2;
+  string virt = 3;
+  string status = 4;                  // "passing" ou "critical", vindo do Consul
+  repeated string capabilities = 5;
+  repeated string tags = 6;
+}
+
+message WorkerList {
+  repeated Worker workers = 1;
+  string leader = 2;                  // qual replica de coordenador respondeu
+}
