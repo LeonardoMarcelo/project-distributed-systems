@@ -24,6 +24,7 @@ STDLIB_ONLY = [
     "minigrid.envelope",
     "minigrid.naming",
     "minigrid.stomp",
+    "worker.sandbox",
 ]
 
 
