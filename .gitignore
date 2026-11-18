@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# dados de execução
+blobs/
+entrega/
+*.log
+
+# saídas de teste
+tests/_out/
+*.out.png
+
+# workspace do executor de planos
+.superpowers/
