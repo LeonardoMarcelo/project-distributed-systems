@@ -201,6 +201,21 @@ def _no_e_conteiner(status):
     return (status.get("virt") or "") == "container"
 
 
+def _submit_tarefa_longa(cliente, passos=30, sono="0.4"):
+    """Tarefa de duracao PREVISIVEL, com pausa por passo.
+
+    As receitas do catalogo medem trabalho, nao tempo: `pi` com 16 passos leva
+    segundos num arm64 nativo e muito mais num x86_64 emulado. Os testes de
+    migracao precisam que a tarefa ainda esteja rodando quando o no for
+    desligado — com duracao dependente da velocidade da maquina, a tarefa
+    terminava antes de o `docker compose stop` fazer efeito e nao havia migracao
+    para observar. Com pausa explicita por passo, o piso de duracao e conhecido:
+    `passos * sono` segundos.
+    """
+    return cliente.submit("pi", code=SLOW, requires=[],
+                          params={"steps": str(passos), "sleep": str(sono)})
+
+
 def _submit_ate_cair_em_conteiner(cliente, consul, params, tentativas=4):
     """Submete ate a tarefa comecar num no que o compose consegue desligar.
 
@@ -208,7 +223,9 @@ def _submit_ate_cair_em_conteiner(cliente, consul, params, tentativas=4):
     determinismo, o teste tenta algumas vezes e faz skip com motivo claro.
     """
     for _ in range(tentativas):
-        task_id = cliente.submit("pi", params=params)
+        task_id = _submit_tarefa_longa(
+            cliente, passos=int(params.get("steps", 30)),
+            sono=params.get("sleep", "0.4"))
         chave = "minigrid/tasks/" + task_id + "/checkpoint"
         if not wait_until(lambda: consul.kv_get(chave) is not None, timeout=180):
             continue
@@ -479,7 +496,7 @@ def test_e_tarefa_migra_e_retoma_do_checkpoint(client, consul, restaura_stack):
     trabalhador quando o nó original for sobrecarregado ou desligado, retomando-a
     a partir do último ponto de verificação (checkpoint) salvo"."""
     task_id, origem = _submit_ate_cair_em_conteiner(
-        client, consul, {"steps": "16", "per_step": "40000"})
+        client, consul, {"steps": "30", "sleep": "0.4"})
     if task_id is None:
         pytest.skip("a tarefa nao caiu num no em conteiner em 4 tentativas; o no "
                     "de VM de processo nao pode ser desligado deste teste")
@@ -510,7 +527,8 @@ def test_e_tarefa_migra_e_retoma_do_checkpoint(client, consul, restaura_stack):
         "retomou do passo %d, mas o checkpoint estava em %d: o trabalho foi refeito"
         % (final["resumed_from_step"], passo_na_queda)
     )
-    assert json.loads(client.result(task_id))["steps"] == 16
+    assert final["step"] == 30, (
+        "concluiu em %d passos, esperava 30" % final["step"])
 
 
 def _familia_de_arquitetura(arch):
@@ -539,7 +557,7 @@ def _tentativa_de_migracao_entre_arquiteturas(client, consul, de_servico, para_s
     wait_until(lambda: any(w["status"] == "passing" and de_servico.split("-")[1] in w["id"]
                            for w in client.workers()["workers"]), timeout=60)
 
-    task_id = client.submit("pi", params={"steps": "14", "per_step": "30000"})
+    task_id = _submit_tarefa_longa(client, passos=24, sono="0.4")
     chave = "minigrid/tasks/" + task_id + "/checkpoint"
     if not wait_until(lambda: consul.kv_get(chave) is not None, timeout=180):
         return None
@@ -611,7 +629,8 @@ def test_e_migracao_atravessa_arquiteturas_diferentes(client, consul, restaura_s
         "retomou do passo %d, mas o checkpoint estava em %d"
         % (final["resumed_from_step"], resultado["passo_na_queda"])
     )
-    assert json.loads(client.result(resultado["task_id"]))["steps"] == 14
+    assert final["step"] == 24, (
+        "concluiu em %d passos, esperava 24" % final["step"])
     print("\nmigracao entre arquiteturas: %s (%s) -> %s (%s), retomou do passo %d"
           % (origem["worker_id"], origem["arch"], final["worker_id"], final["arch"],
              final["resumed_from_step"]))
