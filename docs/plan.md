@@ -1,5 +1,11 @@
 # MiniGrid Implementation Plan
 
+> **Estado: concluído.** As 17 tarefas foram executadas. O registro do que foi
+> decidido durante a execução, incluindo os seis defeitos de produto encontrados
+> ao rodar o sistema de verdade, está em `docs/design.md` §12 e no relatório.
+> Este documento fica como o plano *original*, para quem quiser comparar o que
+> foi planejado com o que foi construído.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Construir o MiniGrid — middleware de execução distribuída de tarefas que cobre integralmente os itens A–G do enunciado de Sistemas Distribuídos, rodando por um único `docker compose up` mais um worker fora do Docker que não instala nada na máquina.
