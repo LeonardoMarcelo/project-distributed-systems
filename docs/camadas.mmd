@@ -1,0 +1,44 @@
+flowchart TB
+
+  subgraph L1["1 · Camada de aplicacao"]
+    direction LR
+    A1["<b>Aplicacao cliente</b><br/>minigrid/__main__.py<br/>submit · status · result · watch · workers"]
+    A2["<b>Painel de monitoramento</b><br/>dashboard/<br/>assinante do pub/sub"]
+  end
+
+  subgraph L2["2 · Camada de middleware MiniGrid — escrita neste trabalho"]
+    direction LR
+    B1["<b>Biblioteca do cliente</b><br/>minigrid/client.py<br/>resolve o lider no servico de nomes<br/>repete em falha de lider"]
+    B2["<b>Interceptadores</b><br/>cliente e servidor<br/>tempo de resposta · origem"]
+    B3["<b>Coordenador</b><br/>coordinator/<br/>eleicao · despacho · resultado · reaper"]
+    B4["<b>Executor e VM de processo</b><br/>worker/<br/>passos · checkpoint · migracao"]
+  end
+
+  subgraph L3["3 · Camada de transporte"]
+    direction LR
+    C1["<b>gRPC</b> sobre HTTP/2 sobre TCP<br/>cliente ↔ coordenador<br/>IDL em proto/minigrid.proto"]
+    C2["<b>AMQP 0-9-1</b> sobre TCP<br/>coordenador ↔ nos em conteiner"]
+    C3["<b>STOMP 1.2</b> sobre socket TCP<br/>coordenador ↔ no do host<br/>escrito a mao, so stdlib"]
+    C4["<b>HTTP/JSON</b> sobre TCP<br/>servico de nomes"]
+  end
+
+  subgraph L4["4 · Sistema operacional e ambiente virtual"]
+    direction LR
+    D1["<b>Conteiner</b> — namespaces e cgroups<br/>imita: <i>chamadas de sistema</i><br/>nos worker-a, worker-b, worker-legacy"]
+    D2["<b>Conteiner emulado</b> — QEMU/Rosetta<br/>imita: <i>conjunto de instrucoes</i> tambem<br/>no worker-a, linux/amd64 em host arm64"]
+    D3["<b>VM de processo</b> — interpretador isolado<br/>imita: <i>biblioteca e linguagem</i><br/>no do host, fora do Docker"]
+  end
+
+  L1 ==> L2
+  L2 ==> L3
+  L3 ==> L4
+
+  classDef app fill:#1F3A4A,stroke:#58A6D6,color:#DCE3E8
+  classDef mw fill:#2A3140,stroke:#8795A6,color:#DCE3E8
+  classDef tr fill:#203A30,stroke:#5FD3A6,color:#C8F0E0
+  classDef so fill:#2E2440,stroke:#B48BE0,color:#E6D8F5
+
+  class A1,A2 app
+  class B1,B2,B3,B4 mw
+  class C1,C2,C3,C4 tr
+  class D1,D2,D3 so

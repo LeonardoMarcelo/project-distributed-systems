@@ -1,0 +1,55 @@
+sequenceDiagram
+  autonumber
+  actor U as Usuario
+  participant CLI as Aplicacao cliente
+  participant LIB as Middleware MiniGrid<br/>(biblioteca)
+  participant NS as Servico de nomes<br/>Consul
+  participant CO as Coordenador lider<br/>coord-1
+  participant MQ as RabbitMQ<br/>fila duravel
+  participant W1 as no A<br/>conteiner x86_64 emulado
+  participant W2 as no B<br/>conteiner aarch64
+
+  U->>CLI: ./grid submit pi --steps 16 --wait
+  CLI->>LIB: submit("pi", params)
+  Note over LIB: le o codigo-fonte da receita<br/>do catalogo local
+
+  LIB->>NS: GET kv minigrid/coordinator/leader
+  NS-->>LIB: endereco do lider
+  Note over LIB,NS: o cliente nunca conheceu endereco de no.<br/>Transparencia de localizacao.
+
+  LIB->>CO: Submit(recipe, code, data, params) [gRPC]
+  Note over CO: interceptador cronometra<br/>e registra a origem
+  CO->>NS: grava metadado da tarefa
+  CO->>MQ: publica envelope: codigo + dados<br/>delivery_mode=2
+  CO-->>LIB: task_id
+  LIB-->>CLI: task_id
+  Note over CLI,CO: devolveu ANTES de executar.<br/>E a operacao assincrona do item B.
+
+  CLI->>CO: Watch(task_id) [stream de servidor]
+
+  MQ->>W1: entrega a tarefa
+  W1->>NS: adquire a posse da tarefa<br/>lock por sessao
+  Note over W1: instancia o codigo recebido<br/>na VM de processo
+  W1->>NS: checkpoint do passo 1..5
+  W1->>MQ: eventos running / checkpoint
+  MQ->>CO: eventos
+  CO-->>CLI: push das transicoes
+
+  rect rgba(232,163,61,0.14)
+    Note over W1,W2: migracao — o no A e desligado no meio
+    W1->>MQ: nack com requeue<br/>+ evento migrated
+    MQ->>W2: reentrega a MESMA tarefa
+    W2->>NS: le o checkpoint do passo 5
+    Note over W2: retoma do passo 6,<br/>em outra arquitetura
+  end
+
+  W2->>NS: checkpoint do passo 6..16
+  W2->>MQ: resultado na fila de resultados
+  MQ->>CO: resultado
+  CO->>NS: marca a tarefa concluida
+  W2->>MQ: evento done
+  MQ->>CO: evento done
+  CO-->>CLI: push: done
+  CLI->>CO: GetResult(task_id)
+  CO-->>CLI: bytes do resultado
+  CLI-->>U: pi = 3.1416

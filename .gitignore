@@ -11,6 +11,7 @@ entrega/
 # saídas de teste
 tests/_out/
 *.out.png
+!docs/*.png
 
 # workspace do executor de planos
 .superpowers/

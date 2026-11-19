@@ -1,0 +1,56 @@
+flowchart TB
+
+  CLI["<b>Aplicacao cliente</b><br/>nao conhece endereco nem<br/>quantidade de nos"]
+
+  subgraph COORD["Coordenador — duas replicas, eleicao automatica"]
+    direction LR
+    C1["<b>coord-1</b> · LIDER<br/>aceita escrita<br/>coleta resultado · reaper"]
+    C2["<b>coord-2</b> · replica<br/>responde leitura<br/>aguarda a chave do lider"]
+  end
+
+  NS[("<b>Servico de nomes</b> · Consul<br/>registro dos nos, health check TTL 10s<br/>eleicao: sessao + lock de chave, LockDelay 0s<br/>KV: metadado da tarefa e checkpoint")]
+
+  MQ[("<b>Middleware de mensagens</b> · RabbitMQ<br/>minigrid.tasks · minigrid.tasks.legacy · minigrid.results<br/>filas duraveis, mensagens persistentes<br/>exchange topic minigrid.events · plugin STOMP")]
+
+  subgraph NODES["Nos trabalhadores"]
+    direction LR
+    WA["<b>worker-a-amd64</b><br/>conteiner linux/amd64<br/><b>ISA emulada</b><br/>0.5 CPU · 512 MB"]
+    WB["<b>worker-b-arm64</b><br/>conteiner linux/arm64<br/>chamadas de sistema<br/>0.5 CPU · 512 MB"]
+    WL["<b>worker-legacy</b><br/>conteiner nativo<br/>wrapper do ImageMagick<br/>cap. legacy:imagemagick"]
+    WH["<b>no do host</b><br/><b>VM de processo</b><br/>fora do Docker<br/>so biblioteca padrao"]
+  end
+
+  PAINEL["<b>Painel</b> :8080<br/>assinante do pub/sub"]
+
+  CLI -->|"gRPC: Submit · Watch"| COORD
+  CLI -.->|"descobre o lider"| NS
+  COORD <-->|"eleicao · metadado · checkpoint"| NS
+  COORD -->|"publica o envelope:<br/><b>codigo + dados</b>"| MQ
+  MQ -->|"fila de resultados"| COORD
+
+  MQ -->|"AMQP"| WA
+  MQ -->|"AMQP"| WB
+  MQ -->|"AMQP, fila da capacidade"| WL
+  MQ -->|"<b>STOMP</b>"| WH
+
+  NODES -.->|"registro · heartbeat<br/>posse · checkpoint"| NS
+  NODES -->|"resultado · eventos de estado"| MQ
+
+  MQ -->|"eventos"| PAINEL
+  NS -.->|"presenca e lideranca"| PAINEL
+
+  classDef cliente fill:#1F3A4A,stroke:#58A6D6,color:#DCE3E8
+  classDef infra fill:#17313E,stroke:#58A6D6,color:#DCE3E8
+  classDef lider fill:#3A3520,stroke:#F2D06B,color:#F7ECC4
+  classDef replica fill:#2A3140,stroke:#8795A6,color:#DCE3E8
+  classDef emulado fill:#3A2B20,stroke:#E8A33D,color:#F7DFC4
+  classDef nativo fill:#203A30,stroke:#5FD3A6,color:#C8F0E0
+  classDef processvm fill:#2E2440,stroke:#B48BE0,color:#E6D8F5
+
+  class CLI,PAINEL cliente
+  class NS,MQ infra
+  class C1 lider
+  class C2 replica
+  class WA emulado
+  class WB,WL nativo
+  class WH processvm
