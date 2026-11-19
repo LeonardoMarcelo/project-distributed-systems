@@ -29,6 +29,7 @@ STDLIB_ONLY = [
     "worker.legacy",
     "minigrid.recipes",
     "worker.registry",
+    "host_worker.worker",
 ]
 
 
