@@ -1,0 +1,4 @@
+# O worker nao fala gRPC: ele so consome da fila e escreve no Consul. Entao nao
+# precisa de grpcio nem de protobuf — e por isso que a imagem dele e bem menor
+# que a do coordenador.
+pika==1.4.4

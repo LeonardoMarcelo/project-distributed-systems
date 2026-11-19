@@ -72,6 +72,13 @@ def run_task(envelope, transport, worker_id, limits=None, checkpoint_every=1,
              max_steps=DEFAULT_MAX_STEPS):
     """Executa a tarefa do envelope ate acabar, falhar ou ser cedida.
 
+    `stop_reason` pode ser uma string ou um invocavel sem argumentos. O
+    invocavel existe porque quem decide o motivo e o proprio `should_stop`, que
+    roda *depois* desta funcao ter sido chamada: o worker so sabe que a causa foi
+    sobrecarga no instante em que mede a carga. Passar o motivo como valor fixo
+    congelava o padrao "shutdown", e o evento `migrated` mentia sobre a causa da
+    migracao — exatamente o dado que o item E pede para explicar.
+
     Devolve:
       "done"     — concluida; resultado enviado e checkpoint limpo
       "failed"   — erro da tarefa; o worker segue vivo
@@ -155,8 +162,19 @@ def run_task(envelope, transport, worker_id, limits=None, checkpoint_every=1,
             if _persist(transport, task_id, state, emit, steps_run,
                         announce=False) is False:
                 return "failed"
-            emit("migrated", {"step": steps_run, "reason": stop_reason})
+            emit("migrated", {"step": steps_run,
+                              "reason": _resolve_reason(stop_reason)})
             return "yielded"
+
+
+def _resolve_reason(stop_reason):
+    """Resolve o motivo da parada, que pode ser string ou invocavel."""
+    if callable(stop_reason):
+        try:
+            return str(stop_reason())
+        except Exception:
+            return "shutdown"
+    return str(stop_reason)
 
 
 def _step_of(state):

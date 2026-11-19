@@ -1,0 +1,39 @@
+# Imagem do worker que embrulha o programa legado (item A).
+#
+# Identica a do worker generico, mais o ImageMagick — um programa de linha de
+# comando que existe desde 1990, nao sabe que o MiniGrid existe e cuja unica
+# interface e argv mais stdin/stdout mais codigo de saida. O wrapper
+# (worker/legacy.py) faz a traducao, e o codigo movel o ve como uma chamada de
+# biblioteca: `api.run_legacy("imagemagick", [...])`.
+#
+# Roda em plataforma nativa, sem `platform:` no compose. Motivo: emular a ISA
+# *e* processar imagem no mesmo nó multiplicaria o tempo de cada tarefa sem
+# acrescentar nada ao que o item D exige — a heterogeneidade de arquitetura ja e
+# demonstrada pelos dois workers genericos.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    MINIGRID_CAPS=legacy:imagemagick \
+    MINIGRID_QUEUE=minigrid.tasks.legacy
+
+WORKDIR /app
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends imagemagick \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY requirements/worker.txt /app/requirements/worker.txt
+RUN pip install --no-cache-dir -r /app/requirements/worker.txt
+
+COPY minigrid/__init__.py minigrid/envelope.py minigrid/naming.py \
+     minigrid/stomp.py minigrid/events.py /app/minigrid/
+COPY worker/ /app/worker/
+
+# Falha o build se o ImageMagick nao for invocavel pelo wrapper. Sem isto, uma
+# imagem base que trocasse `convert` por `magick` (ImageMagick 6 -> 7) so
+# quebraria na primeira tarefa de imagem — possivelmente na demonstracao.
+RUN python -c "from worker import legacy; \
+print('imagemagick resolvido como:', legacy.resolve_imagemagick())"
+
+CMD ["python", "-m", "worker.main"]

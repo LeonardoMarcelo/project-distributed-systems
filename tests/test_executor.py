@@ -155,6 +155,26 @@ def test_migrated_event_carries_the_reason(fake):
     assert fake.last("migrated")["reason"] == "overload"
 
 
+def test_stop_reason_can_be_resolved_lazily(fake):
+    """O motivo so e conhecido quando `should_stop` decide parar.
+
+    O worker decide "sobrecarga" dentro do proprio `should_stop`, depois de
+    `run_task` ja ter sido chamada. Passar o motivo como valor fixo congelava o
+    padrao "shutdown" e o evento `migrated` mentia sobre a causa da migracao —
+    justamente o dado que o item E pede para explicar.
+    """
+    motivo = {"valor": "shutdown"}
+
+    def should_stop():
+        motivo["valor"] = "overload"
+        return True
+
+    executor.run_task(env(PI_STEP, params={"steps": "10"}), fake, "w1", L,
+                      should_stop=should_stop,
+                      stop_reason=lambda: motivo["valor"])
+    assert fake.last("migrated")["reason"] == "overload"
+
+
 def test_resumed_task_continues_instead_of_restarting(fake):
     fake.checkpoints["t1"] = {"n": 8}
     executor.run_task(env(PI_STEP, params={"steps": "10"}), fake, "w1", L)
