@@ -38,9 +38,10 @@ sequenceDiagram
   rect rgba(232,163,61,0.14)
     Note over W1,W2: migracao — o no A e desligado no meio
     W1->>MQ: nack com requeue<br/>+ evento migrated
+    Note over W1,W2: qual dos dois esta emulado depende do host<br/>num host arm64 e o no A, num host x86_64 e o no B
     MQ->>W2: reentrega a MESMA tarefa
     W2->>NS: le o checkpoint do passo 5
-    Note over W2: retoma do passo 6,<br/>em OUTRA arquitetura<br/>(num host arm64 o no A e o emulado;<br/>num host x86_64, o no B)
+    Note over W2: retoma do passo 6,<br/>em OUTRA arquitetura
   end
 
   W2->>NS: checkpoint do passo 6..16
