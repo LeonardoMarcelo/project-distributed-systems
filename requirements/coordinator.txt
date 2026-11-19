@@ -1,0 +1,12 @@
+# Versoes fixadas de proposito, e a relacao entre elas importa:
+#
+# `grpcio` casa com o `grpcio-tools` de scripts/gen_proto.sh (1.83.1) — stubs
+# gerados por uma versao de ferramenta mais nova que o runtime quebram no import.
+#
+# `protobuf` tem de ser >= a versao do *gencode* embutido nos stubs. O protoc do
+# grpcio-tools 1.83.1 gera gencode 7.35.1, e o runtime do protobuf recusa rodar
+# gencode mais novo que ele mesmo. Fixar 6.x aqui fazia a imagem subir e morrer
+# no primeiro import, com VersionError. O Dockerfile valida isso no build.
+grpcio==1.83.1
+protobuf==7.36.1
+pika==1.4.4

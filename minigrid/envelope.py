@@ -16,6 +16,23 @@ import time
 #: armazenamento de objetos (MinIO/S3), declarado como nao-meta no design.
 MAX_PAYLOAD = 8 * 1024 * 1024
 
+#: Tamanho maximo de mensagem a configurar no gRPC, nas duas pontas.
+#:
+#: O padrao do gRPC e 4 MB. Sem elevar isso, um payload de 8 MB e recusado pelo
+#: *transporte* com RESOURCE_EXHAUSTED antes de chegar a validacao do
+#: coordenador — ou seja, o limite documentado de 8 MB seria falso (o real seria
+#: 4 MB) e o cliente receberia um erro de transporte opaco em vez da mensagem
+#: clara de INVALID_ARGUMENT. A folga de 2 MB cobre o overhead do protobuf e os
+#: outros campos da mensagem.
+GRPC_MAX_MESSAGE = MAX_PAYLOAD + 2 * 1024 * 1024
+
+#: Opcoes de canal/servidor gRPC. Usadas pelo coordenador, pela biblioteca do
+#: cliente e pelos testes — se divergirem, o limite volta a ser inconsistente.
+GRPC_CHANNEL_OPTIONS = (
+    ("grpc.max_receive_message_length", GRPC_MAX_MESSAGE),
+    ("grpc.max_send_message_length", GRPC_MAX_MESSAGE),
+)
+
 #: Versao do formato, para o worker recusar um envelope que nao entende.
 FORMAT_VERSION = 1
 
