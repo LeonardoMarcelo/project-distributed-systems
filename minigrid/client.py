@@ -104,13 +104,17 @@ class _ClientInterceptor(grpc.UnaryUnaryClientInterceptor,
 
 
 class MiniGridClient(object):
-    def __init__(self, consul_url=None, client_id=None, max_retries=5,
-                 leader_key=LEADER_KEY, prefer=None):
+    def __init__(self, consul_url=None, client_id=None, max_retries=12,
+                 leader_key=LEADER_KEY, prefer=None, failover_budget=45.0):
         self.consul = naming.Consul(
             consul_url or os.environ.get("MINIGRID_CONSUL", "http://localhost:8500")
         )
         self.client_id = client_id or ("cli-" + uuid.uuid4().hex[:8])
         self.max_retries = int(os.environ.get("MINIGRID_MAX_RETRIES", max_retries))
+        # Folga sobre os ~20 s de failover medidos. Ver `_call`.
+        self.failover_budget = float(
+            os.environ.get("MINIGRID_FAILOVER_BUDGET", failover_budget)
+        )
         self.leader_key = leader_key
         # Dentro de um conteiner usa-se o endereco interno; do host, o externo.
         # A chave guarda os dois justamente porque ha consumidores dos dois
@@ -181,9 +185,20 @@ class MiniGridClient(object):
 
         E aqui que mora a transparencia de falhas: matar o lider no meio de uma
         sessao nao produz erro para quem chamou, produz uma pausa.
+
+        O orcamento e de *tempo*, nao de tentativas, e isso vem de uma medicao:
+        o failover apos uma queda abrupta leva ~20 s, porque depende da
+        expiracao do TTL da sessao no Consul (medido 20,15 s; ver o relatorio).
+        Com um teto de 5 tentativas e recuo exponencial, o cliente desistia em
+        ~15 s — antes de o novo lider existir. A transparencia de falhas
+        quebrava exatamente no caso que ela deveria cobrir, e sem um deadline
+        explicito isso volta a acontecer na primeira vez que alguem mexer no
+        recuo. Por isso o limite e `deadline`, com folga sobre os 20 s medidos.
         """
+        deadline = time.monotonic() + self.failover_budget
         ultimo = None
-        for tentativa in range(self.max_retries):
+        tentativa = 0
+        while True:
             try:
                 stub = self._connect(force=tentativa > 0)
                 return getattr(stub, method_name)(request, timeout=timeout)
@@ -194,12 +209,16 @@ class MiniGridClient(object):
                     raise
                 ultimo = exc
                 self.close()
-            # Recuo exponencial com teto: a eleicao por expiracao de TTL leva
-            # ~20 s, entao insistir rapido so gasta tentativa.
-            time.sleep(min(0.5 * (2 ** tentativa), 8.0))
+
+            tentativa += 1
+            restante = deadline - time.monotonic()
+            if restante <= 0 or tentativa >= self.max_retries:
+                break
+            time.sleep(min(0.5 * (2 ** (tentativa - 1)), 4.0, restante))
+
         raise NoCoordinator(
-            "nenhum coordenador respondeu em " + str(self.max_retries)
-            + " tentativas; ultimo erro: " + str(ultimo)
+            "nenhum coordenador respondeu em " + str(tentativa) + " tentativas ao "
+            "longo de " + str(self.failover_budget) + "s; ultimo erro: " + str(ultimo)
         )
 
     # ------------------------------------------------------------- interface

@@ -1,5 +1,7 @@
 # MiniGrid
 
+[![rubrica](https://github.com/LeonardoMarcelo/project-distributed-systems/actions/workflows/ci.yml/badge.svg)](https://github.com/LeonardoMarcelo/project-distributed-systems/actions/workflows/ci.yml)
+
 Sistema de computação em grade em miniatura. O usuário submete tarefas
 computacionais; o middleware MiniGrid as distribui, executa e acompanha em nós
 trabalhadores heterogêneos e virtualizados — escondendo de quem submete onde, em
@@ -197,12 +199,58 @@ python3 -m pytest tests/ -q
 ```
 
 `tests/test_rubrica.py` é a parte interessante: cada teste é um item do
-enunciado, verificado contra o sistema em execução.
+enunciado, verificado contra o sistema em execução. Ele mexe no estado do
+sistema — derruba nós, mata o líder, escala réplicas — e restaura no fim, mas
+não rode junto com uma demonstração.
+
+```bash
+scripts/host_worker.sh &                    # para os testes do item G
+python3 -m pytest tests/test_rubrica.py -v
+```
 
 Alguns testes precisam de `grpcio`, `pika` ou `grpc_tools`, e são
 automaticamente ignorados se a biblioteca não estiver presente. Nada disso é
 necessário para **usar** o MiniGrid — só para desenvolvê-lo. O nó que roda fora
-do Docker continua sem dependência alguma.
+do Docker continua sem dependência alguma, e `tests/test_purity.py` verifica
+isso a cada rodada.
+
+### O CI roda a própria rubrica
+
+`.github/workflows/ci.yml` sobe o compose inteiro num runner do GitHub e roda
+`tests/test_rubrica.py`. O badge no topo deste README não diz "os testes
+passam"; diz que os itens A–G do enunciado foram verificados contra o sistema
+em execução.
+
+Um detalhe que vale a pena: o runner do GitHub é x86_64, então **lá o nó
+emulado é o `linux/arm64`** — o inverso da máquina Apple Silicon onde o projeto
+foi desenvolvido. Isso é intencional, e prova que fixar as duas plataformas no
+compose funciona nas duas direções.
+
+### Medições
+
+```bash
+scripts/bench_boot.sh        # custo de inicialização por ambiente, em CSV
+./grid bench --count 24      # em que arquitetura cada tarefa rodou
+```
+
+As tabelas comparativas do relatório saem desses dois comandos, não de
+estimativa.
+
+---
+
+## Gravando a demonstração
+
+```bash
+scripts/demo.sh              # pausa entre etapas, para narrar
+scripts/demo.sh --auto       # sem pausas, para conferir que tudo passa
+```
+
+O roteiro segue a ordem que o enunciado pede para o vídeo: subida e registro dos
+nós; submissão por RPC e passagem pela fila; execução nos dois tipos de ambiente
+incluindo o de arquitetura diferente; migração de tarefa em andamento após o
+desligamento do nó; e eleição de novo coordenador após matar a réplica
+principal. Cada etapa anuncia o que vai provar antes de executar, então a
+gravação não depende de digitação ao vivo nem de ordem decorada.
 
 ---
 

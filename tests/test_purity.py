@@ -30,6 +30,7 @@ STDLIB_ONLY = [
     "minigrid.recipes",
     "worker.registry",
     "host_worker.worker",
+    "worker.progress",
 ]
 
 

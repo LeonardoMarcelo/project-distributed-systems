@@ -1,0 +1,14 @@
+# Dependencias da SUITE DE TESTES, nao do sistema.
+#
+# Entram no runner do CI e na maquina de quem desenvolve. Nada disto e
+# necessario para *usar* o MiniGrid: os componentes trazem as proprias
+# dependencias dentro das imagens, e o no de VM de processo nao tem nenhuma —
+# o que tests/test_purity.py verifica a cada rodada.
+#
+# `grpcio` casado com o grpcio-tools de scripts/gen_proto.sh, e `protobuf` >= a
+# versao do gencode dos stubs versionados. Ver requirements/coordinator.txt.
+grpcio==1.83.1
+grpcio-tools==1.83.1
+protobuf==7.36.1
+pika==1.4.4
+pytest==9.2.0

@@ -38,7 +38,7 @@ import time
 import pika
 
 from minigrid import envelope, events
-from worker import executor, registry, sandbox
+from worker import executor, progress, registry, sandbox
 
 
 class WorkerConfig(object):
@@ -92,6 +92,10 @@ class AmqpTransport(executor.Transport):
 
     def publish_event(self, kind, payload):
         self.publisher.publish(kind, payload)
+        # O evento tambem e projetado no servico de nomes. Sem isto `GetStatus`
+        # nao reporta progresso nenhum: salta de `received` para `done`, com
+        # worker_id vazio durante toda a execucao. Ver worker/progress.py.
+        progress.project(self.consul, self.config.kv_prefix, kind, payload)
 
     def save_checkpoint(self, task_id, state):
         self.consul.kv_put(self._checkpoint_key(task_id),

@@ -1,0 +1,129 @@
+# CI que roda a propria rubrica do trabalho.
+#
+# Nao e so "os testes passam": cada item A-G do enunciado e uma asseracao aqui, e
+# o job falha se o requisito correspondente estiver quebrado. O que o relatorio
+# afirma, este workflow verifica.
+#
+# O runner do GitHub e x86_64, entao nele o worker emulado e o `linux/arm64` — o
+# inverso do Apple Silicon onde o projeto foi desenvolvido. Isso e intencional:
+# prova que fixar as duas plataformas no compose funciona nas duas direcoes, e
+# que o item D nao depende da arquitetura de quem corrige.
+#
+# Nota de seguranca: nenhum passo interpola conteudo controlavel por terceiros
+# (titulo de issue, corpo de PR, mensagem de commit) dentro de `run:`. O unico
+# `${{ }}` fora de input de action e `github.ref`, usado na chave de
+# concorrencia, que nao e executado como comando.
+name: rubrica
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: rubrica-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-multi-arch:
+    name: imagens nas duas arquiteturas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Sem o QEMU registrado no binfmt_misc, o build e a execucao de
+      # `linux/arm64` num runner x86_64 falham com "exec format error".
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: worker nas duas plataformas
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: worker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: coordenador
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: coordinator/Dockerfile
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  rubrica:
+    name: itens A-G do enunciado
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Estas dependencias entram no *runner*, que e descartavel. A promessa de
+      # nao instalar nada vale para a maquina de quem usa o MiniGrid, e o no de
+      # VM de processo continua sem dependencia alguma — o que o proprio
+      # tests/test_purity.py verifica.
+      - name: dependencias dos testes
+        run: pip install -r requirements/tests.txt
+
+      - name: sobe o sistema
+        run: docker compose up -d --build
+
+      - name: espera os healthchecks
+        run: scripts/wait_healthy.sh 420
+
+      - name: estado inicial, para o log do job
+        run: |
+          docker compose ps
+          curl -sf http://localhost:8500/v1/status/leader
+          echo
+          curl -sf http://localhost:8080/api/state | head -c 600
+          echo
+
+      - name: sobe o no de VM de processo (fora do Docker)
+        run: |
+          nohup scripts/host_worker.sh > host_worker.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:8500/v1/agent/services \
+               | grep -q '"virt:process-vm"'; then
+              echo "no de VM de processo registrado"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::warning::o no de VM de processo nao se registrou em 60s"
+          cat host_worker.log
+
+      - name: unitarios e de integracao
+        run: python3 -m pytest tests/ -q --ignore=tests/test_rubrica.py
+
+      - name: a rubrica A-G
+        run: python3 -m pytest tests/test_rubrica.py -v
+
+      - name: custo de inicializacao por ambiente
+        run: scripts/bench_boot.sh || true
+
+      - name: diagnostico quando algo falha
+        if: failure()
+        run: |
+          echo "### compose ps"; docker compose ps
+          echo "### coordenadores"; docker compose logs --tail 120 coord-1 coord-2
+          echo "### workers"; docker compose logs --tail 120 worker-a worker-b worker-legacy
+          echo "### painel"; docker compose logs --tail 60 dashboard
+          echo "### no de VM de processo"; tail -120 host_worker.log || true
+          echo "### servico de nomes"; curl -s http://localhost:8500/v1/agent/services || true
+          echo "### filas"; curl -s -u guest:guest http://localhost:15672/api/queues || true
+
+      - name: derruba tudo
+        if: always()
+        run: docker compose down -v --remove-orphans

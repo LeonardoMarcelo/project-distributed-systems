@@ -35,7 +35,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from minigrid import envelope, naming, stomp          # noqa: E402
-from worker import executor, registry, sandbox        # noqa: E402
+from worker import executor, progress, registry, sandbox  # noqa: E402
 
 
 class HostConfig(object):
@@ -96,6 +96,9 @@ class StompTransport(executor.Transport):
         except Exception:
             # Evento e transiente por desenho; nao derruba a tarefa.
             pass
+        # Mesma projecao do worker em conteiner: o estado vivo precisa existir
+        # no servico de nomes, nao so no fluxo de eventos.
+        progress.project(self.consul, self.config.kv_prefix, kind, payload)
 
     def save_checkpoint(self, task_id, state):
         self.consul.kv_put(self._checkpoint_key(task_id),
