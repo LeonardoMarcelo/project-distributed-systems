@@ -6,8 +6,8 @@ sequenceDiagram
   participant NS as Servico de nomes<br/>Consul
   participant CO as Coordenador lider<br/>coord-1
   participant MQ as RabbitMQ<br/>fila duravel
-  participant W1 as no A<br/>conteiner x86_64 emulado
-  participant W2 as no B<br/>conteiner aarch64
+  participant W1 as no A<br/>conteiner linux/amd64
+  participant W2 as no B<br/>conteiner linux/arm64
 
   U->>CLI: ./grid submit pi --steps 16 --wait
   CLI->>LIB: submit("pi", params)
@@ -40,7 +40,7 @@ sequenceDiagram
     W1->>MQ: nack com requeue<br/>+ evento migrated
     MQ->>W2: reentrega a MESMA tarefa
     W2->>NS: le o checkpoint do passo 5
-    Note over W2: retoma do passo 6,<br/>em outra arquitetura
+    Note over W2: retoma do passo 6,<br/>em OUTRA arquitetura<br/>(num host arm64 o no A e o emulado;<br/>num host x86_64, o no B)
   end
 
   W2->>NS: checkpoint do passo 6..16
