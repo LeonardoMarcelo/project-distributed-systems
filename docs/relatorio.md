@@ -467,11 +467,22 @@ A terceira atravessa arquitetura, tipo de virtualização **e** sistema operacio
 de uma vez.
 
 > Verificado por `test_e_migracao_atravessa_arquiteturas_diferentes`, que
-> controla quais nós estão de pé para que a tarefa comece obrigatoriamente no nó
-> emulado e seja retomada obrigatoriamente no nativo, e exige que a família de
-> arquitetura mude. O teste normaliza `arm64` e `aarch64` para a mesma família —
-> são a mesma ISA com nomes diferentes, e comparar as strings cruas aceitaria
-> evidência falsa.
+> controla quais nós estão de pé, derruba o nó que começou a tarefa e exige que
+> a **família de arquitetura** mude na retomada. O teste normaliza `arm64` e
+> `aarch64` para a mesma família — são a mesma ISA com nomes diferentes, e
+> comparar as strings cruas aceitaria evidência falsa.
+
+Esse teste expôs uma assimetria que vale registrar, porque ela só aparece em
+hardware diferente do de desenvolvimento. Num host **arm64**, o `worker-a` é
+x86_64 emulado e o nó de VM de processo é arm64 — qualquer retomada atravessa
+arquitetura. Num host **x86_64**, que é o caso do runner do CI, o `worker-a` é
+x86_64 *nativo* e o nó de VM de processo **também** é x86_64; se a retomada cair
+nele, não houve travessia alguma. Como esse nó roda fora do compose, o teste não
+pode desligá-lo.
+
+A escolha foi tentar nos dois sentidos e, se nenhuma tentativa atravessar,
+**fazer skip com o motivo explícito** em vez de afirmar algo falso. Um teste que
+passasse nessa situação estaria certificando uma evidência que não produziu.
 
 ### 5.5 Recursos locais reestabelecidos no destino
 
