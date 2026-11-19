@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Raiz do projeto: `/Users/leonardomarcelo/Documents/ferramentas/pessoal/bolsa/project_caio`, que é a raiz do próprio repositório. Todos os caminhos deste plano são relativos a ela e todo comando roda a partir dela. Design e plano vivem em `docs/design.md` e `docs/plan.md`.
+- Raiz do projeto: a raiz deste repositorio, que é a raiz do próprio repositório. Todos os caminhos deste plano são relativos a ela e todo comando roda a partir dela. Design e plano vivem em `docs/design.md` e `docs/plan.md`.
 - **Zero instalação na máquina física.** Nenhum `brew install`, `pip install`, `sudo`, daemon ou alteração de PATH fora de contêiner.
 - **Módulos de stdlib pura** — `minigrid/envelope.py`, `minigrid/naming.py`, `minigrid/stomp.py`, `worker/executor.py`, `worker/sandbox.py`, `worker/legacy.py`, `worker/registry.py` e `host_worker/worker.py` importam **somente a biblioteca padrão** e são compatíveis com **Python 3.9+**: sem `match`, sem `X | Y` em anotação, sem `tomllib`. `minigrid/__init__.py` fica vazio.
 - Módulos que podem usar terceiros (rodam só em contêiner ou no runner do CI): `minigrid/client.py`, `minigrid/events.py`, `minigrid/__main__.py`, `coordinator/*`, `worker/main.py`, `dashboard/*`, `tests/*`.

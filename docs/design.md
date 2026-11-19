@@ -2,7 +2,7 @@
 
 **Data:** 2026-11-18
 **Disciplina:** Sistemas Distribuídos
-**Raiz do projeto:** `/Users/leonardomarcelo/Documents/ferramentas/pessoal/bolsa/project_caio`
+**Raiz do projeto:** a raiz deste repositorio
 **Repositório:** `LeonardoMarcelo/project-distributed-systems`, público, criado ao fim do desenvolvimento
 **Documento de design** — aprovado antes do plano de implementação.
 
@@ -610,7 +610,7 @@ As lacunas levantadas na revisão do documento foram resolvidas nele mesmo (§7.
 
 1. **Onde o projeto mora — decidido.** Repositório próprio, dedicado e público:
    `LeonardoMarcelo/project-distributed-systems`, com raiz local em
-   `/Users/leonardomarcelo/Documents/ferramentas/pessoal/bolsa/project_caio`. O projeto
+   a raiz deste repositorio. O projeto
    saiu do `msystem_api`, que é repositório de trabalho. Isso resolve a questão do CI por
    construção (§7.11) e elimina o risco de o CI da empresa reagir a commits de trabalho
    acadêmico. O repositório público é criado **ao fim** do desenvolvimento, não no começo,
