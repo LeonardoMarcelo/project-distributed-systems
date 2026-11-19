@@ -62,6 +62,18 @@ class Transport(object):
     def send_result(self, task_id, result, meta):
         raise NotImplementedError
 
+    def report_failure(self, task_id, error, meta):
+        """Relata falha pelo *mesmo caminho duravel* do resultado.
+
+        Publicar so o evento `failed` nao basta, e isso custou um defeito real:
+        os eventos sao transientes por desenho, entao o estado autoritativo no
+        servico de nomes continuava `received` para sempre. As consequencias
+        eram todas visiveis para quem usa — `GetStatus` mentia, `watch()`
+        esperava um evento terminal que ja tinha passado e nunca retornava, e o
+        reaper via a tarefa como viva e podia republica-la em laco.
+        """
+        raise NotImplementedError
+
 
 def _never_stop():
     return False
@@ -107,6 +119,20 @@ def run_task(envelope, transport, worker_id, limits=None, checkpoint_every=1,
         payload["kind"] = kind
         transport.publish_event(kind, payload)
 
+    def fail(error, step):
+        """Falha a tarefa: publica o evento E grava pelo caminho duravel.
+
+        As duas coisas, sempre. O evento e para quem esta assistindo agora; o
+        relato duravel e o que torna a falha verdade para quem consultar depois.
+        """
+        emit("failed", {"step": step, "error": error})
+        meta = dict(identity)
+        meta.update({"steps": step, "resumed_from_step": resumed_from})
+        try:
+            transport.report_failure(task_id, error, meta)
+        except Exception:
+            pass
+
     state = transport.load_checkpoint(task_id) or {}
     resumed_from = _step_of(state)
     steps_run = resumed_from
@@ -115,11 +141,9 @@ def run_task(envelope, transport, worker_id, limits=None, checkpoint_every=1,
 
     while True:
         if steps_run >= max_steps:
-            emit("failed", {
-                "step": steps_run,
-                "error": "a tarefa excedeu o teto de " + str(max_steps)
-                         + " passos sem concluir; receita possivelmente sem condicao de parada",
-            })
+            fail("a tarefa excedeu o teto de " + str(max_steps)
+                 + " passos sem concluir; receita possivelmente sem condicao de parada",
+                 steps_run)
             return "failed"
 
         outcome = sandbox.run_step(
@@ -129,8 +153,7 @@ def run_task(envelope, transport, worker_id, limits=None, checkpoint_every=1,
         )
 
         if outcome.error:
-            emit("failed", {"step": steps_run, "error": outcome.error,
-                            "limits_skipped": outcome.limits_skipped})
+            fail(outcome.error, steps_run)
             return "failed"
 
         state = outcome.state
@@ -138,7 +161,7 @@ def run_task(envelope, transport, worker_id, limits=None, checkpoint_every=1,
         state.setdefault("n", steps_run)
 
         if outcome.done:
-            persisted = _persist(transport, task_id, state, emit, steps_run)
+            persisted = _persist(transport, task_id, state, emit, fail, steps_run)
             if persisted is False:
                 return "failed"
             meta = dict(identity)
@@ -153,13 +176,13 @@ def run_task(envelope, transport, worker_id, limits=None, checkpoint_every=1,
             return "done"
 
         if steps_run % checkpoint_every == 0:
-            if _persist(transport, task_id, state, emit, steps_run) is False:
+            if _persist(transport, task_id, state, emit, fail, steps_run) is False:
                 return "failed"
 
         if should_stop():
             # Forca o checkpoint fora do intervalo: sem isso, a migracao perde
             # todo o progresso feito desde a ultima gravacao.
-            if _persist(transport, task_id, state, emit, steps_run,
+            if _persist(transport, task_id, state, emit, fail, steps_run,
                         announce=False) is False:
                 return "failed"
             emit("migrated", {"step": steps_run,
@@ -185,7 +208,7 @@ def _step_of(state):
         return 0
 
 
-def _persist(transport, task_id, state, emit, steps_run, announce=True):
+def _persist(transport, task_id, state, emit, fail, steps_run, announce=True):
     """Grava o checkpoint. Devolve False se a tarefa deve falhar.
 
     O tamanho e verificado *antes* de gravar: estourar o limite do Consul KV no
@@ -195,17 +218,13 @@ def _persist(transport, task_id, state, emit, steps_run, announce=True):
     try:
         size = len(json.dumps(state).encode("utf-8"))
     except (TypeError, ValueError) as exc:
-        emit("failed", {"step": steps_run,
-                        "error": "checkpoint nao serializavel em JSON: " + str(exc)})
+        fail("checkpoint nao serializavel em JSON: " + str(exc), steps_run)
         return False
 
     if size > MAX_CHECKPOINT:
-        emit("failed", {
-            "step": steps_run,
-            "error": "checkpoint de " + str(size) + " bytes excede o limite de "
-                     + str(MAX_CHECKPOINT) + " bytes do Consul KV; a receita precisa "
-                     "manter o estado pequeno e deixar dados volumosos no resultado",
-        })
+        fail("checkpoint de " + str(size) + " bytes excede o limite de "
+             + str(MAX_CHECKPOINT) + " bytes do Consul KV; a receita precisa manter "
+             "o estado pequeno e deixar dados volumosos no resultado", steps_run)
         return False
 
     transport.save_checkpoint(task_id, state)

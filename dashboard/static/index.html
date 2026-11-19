@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniGrid — painel</title>
+<style>
+/* Painel anunciador de sala de controle.
+   A posicao e fixa e aprendida; so os dados mudam. Estado e a cor do proprio
+   campo da celula, nao um cracha colado em cima. */
+:root{
+  --panel:#2A3140;        /* metal pintado */
+  --panel-deep:#212735;   /* poco recuado */
+  --panel-edge:#3C4557;
+  --legend:#DCE3E8;       /* serigrafia */
+  --legend-dim:#8795A6;
+  --live:#5FD3A6;         /* executando / saudavel */
+  --warn:#E8A33D;         /* migrada */
+  --fault:#E2615B;        /* falha */
+  --signal:#58A6D6;       /* fila / dados */
+  --lead:#F2D06B;         /* latao: lideranca */
+  --idle:#56617A;
+
+  --legend-face:"Arial Narrow","Liberation Sans Narrow","Roboto Condensed",
+                "Helvetica Neue",sans-serif;
+  --read-face:ui-monospace,"SF Mono","DejaVu Sans Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--panel-deep);
+  color:var(--legend);
+  font-family:var(--legend-face);
+  font-size:15px;line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+}
+/* Monoespacada so para numeros: o que importa e o digito nao tremer a cada
+   atualizacao, nao o estilo. */
+.num{font-family:var(--read-face);font-variant-numeric:tabular-nums;font-size:.9em}
+
+.console{max-width:1360px;margin:0 auto;padding:18px 18px 40px;display:grid;gap:14px}
+.bank{
+  background:var(--panel);border:1px solid var(--panel-edge);
+  border-radius:2px;padding:14px 16px 16px;   /* quase duro: chapa, nao cartao */
+}
+.bank > h2{margin:0 0 12px;font-size:15px;font-weight:600;color:var(--legend)}
+.bank > h2 .hint{float:right;font-weight:400;color:var(--legend-dim);font-size:13px}
+.split{display:grid;gap:14px;grid-template-columns:minmax(230px,300px) 1fr}
+@media(max-width:860px){.split{grid-template-columns:1fr}}
+
+.rail{
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:22px;
+  background:var(--panel);border:1px solid var(--panel-edge);
+  border-radius:2px;padding:11px 16px;
+}
+.rail .mark{font-size:17px;font-weight:700;letter-spacing:.08em;margin-right:4px}
+.rail .mark em{font-style:normal;color:var(--signal)}
+.gauge{display:flex;align-items:baseline;gap:8px;color:var(--legend-dim)}
+.gauge b{color:var(--legend);font-weight:600}
+.bars{display:inline-flex;gap:2px;vertical-align:-1px}
+.bars i{width:5px;height:12px;background:#38415480;border-radius:1px}
+.bars i.on{background:var(--signal)}
+.link{margin-left:auto;display:flex;gap:16px}
+.link a{color:var(--legend-dim);text-decoration:none;border-bottom:1px solid transparent}
+.link a:hover,.link a:focus-visible{color:var(--legend);border-bottom-color:var(--signal)}
+
+.lamp{
+  width:9px;height:9px;border-radius:50%;background:var(--idle);flex:none;
+  transition:background .35s ease,box-shadow .35s ease;
+}
+.lamp.live{background:var(--live);box-shadow:0 0 7px #5FD3A680}
+.lamp.warn{background:var(--warn);box-shadow:0 0 7px #E8A33D80}
+.lamp.fault{background:var(--fault);box-shadow:0 0 7px #E2615B80}
+.lamp.inline{display:inline-block;margin-right:7px}
+
+.cells{display:grid;gap:6px}
+.cell{
+  display:grid;align-items:center;gap:12px;grid-template-columns:9px 1fr auto;
+  background:var(--panel-deep);border:1px solid var(--panel-edge);
+  padding:9px 12px;border-radius:2px;
+}
+.cell .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cell .name small{display:block;font-weight:400;color:var(--legend-dim);font-size:12.5px}
+.tagline{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.tag{
+  font-size:12px;color:var(--legend-dim);border:1px solid var(--panel-edge);
+  border-radius:2px;padding:1px 6px;
+}
+.tag.isa{color:var(--signal);border-color:#58A6D655}
+.tag.vm{color:var(--warn);border-color:#E8A33D55}
+
+.coord{
+  display:grid;grid-template-columns:9px 1fr auto;align-items:center;gap:12px;
+  background:var(--panel-deep);border:1px solid var(--panel-edge);
+  padding:11px 12px;border-radius:2px;margin-bottom:6px;
+  transition:border-color .35s ease;
+}
+.coord.leading{border-color:#F2D06B66}
+.coord .role{font-size:12px;letter-spacing:.14em;color:var(--legend-dim)}
+.coord.leading .role{color:var(--lead)}
+.coord .addr{display:block;font-size:12.5px;color:var(--legend-dim);font-weight:400}
+
+/* ---- raias: o unico lugar onde este painel gasta ousadia ---------------- */
+.lanes{overflow-x:auto;padding-bottom:4px;position:relative}
+.lane{display:grid;grid-template-columns:168px 1fr;align-items:center;gap:12px;height:30px}
+.lane + .lane{border-top:1px solid #2F374780}
+.lane .who{font-size:13px;color:var(--legend);font-weight:600;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.track{position:relative;height:30px;min-width:620px}
+.seg{position:absolute;top:8px;height:14px;border-radius:2px;background:var(--live);opacity:.9}
+.seg.state-migrated{background:var(--warn)}
+.seg.state-failed{background:var(--fault)}
+.seg.state-received,.seg.state-checkpoint{background:var(--signal)}
+.seg .notch{      /* entalhe: aqui a tarefa foi cedida, nao concluida */
+  position:absolute;right:-1px;top:0;bottom:0;width:5px;
+  background:linear-gradient(135deg,transparent 46%,var(--panel) 46%);
+}
+.elbow{  /* liga o fim numa raia ao inicio na raia de baixo: a migracao */
+  position:absolute;border-left:2px solid var(--warn);
+  border-bottom:2px solid var(--warn);width:16px;pointer-events:none;
+}
+.elbow::after{
+  content:"";position:absolute;left:12px;bottom:-5px;
+  border:4px solid transparent;border-left-color:var(--warn);
+}
+
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-weight:600;color:var(--legend-dim);
+  padding:0 10px 7px 0;border-bottom:1px solid var(--panel-edge)}
+td{padding:6px 10px 6px 0;border-bottom:1px solid #2F374766;vertical-align:top}
+td.r,th.r{text-align:right}
+tbody tr:last-child td{border-bottom:none}
+.ok{color:var(--live)}
+.bad{color:var(--fault)}
+.dim{color:var(--legend-dim)}
+.id{font-family:var(--read-face);font-size:12px;color:var(--legend-dim)}
+.offline{color:var(--fault)}
+
+.empty{color:var(--legend-dim);font-size:14px;line-height:1.6;
+  border:1px dashed var(--panel-edge);border-radius:2px;padding:14px 16px}
+.empty code{font-family:var(--read-face);font-size:12.5px;color:var(--legend);
+  background:#1A1F2B;border:1px solid var(--panel-edge);border-radius:2px;padding:1px 5px}
+
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="console">
+
+  <div class="rail">
+    <span class="mark">MINI<em>GRID</em></span>
+    <span class="gauge">na fila <span class="bars" id="bars"></span>
+      <b class="num" id="queued">0</b></span>
+    <span class="gauge">tarefas <b class="num" id="done">0</b>
+      <span class="dim">de</span> <b class="num" id="total">0</b></span>
+    <span class="gauge">migrações <b class="num" id="migs">0</b></span>
+    <span class="gauge">infra <b id="health">—</b></span>
+    <span class="link">
+      <a href="http://localhost:8500/ui" target="_blank" rel="noopener">serviço de nomes</a>
+      <a href="http://localhost:15672" target="_blank" rel="noopener">filas</a>
+    </span>
+  </div>
+
+  <div class="split">
+    <section class="bank">
+      <h2>Coordenador</h2>
+      <div id="coords"></div>
+      <div class="empty" id="coords-empty" hidden>
+        Sem líder eleito. As réplicas disputam a chave no serviço de nomes;
+        depois de uma queda abrupta isso leva até 30 s, porque a sessão precisa
+        expirar por tempo de vida.
+      </div>
+    </section>
+
+    <section class="bank">
+      <h2>Nós trabalhadores <span class="hint" id="worker-count"></span></h2>
+      <div class="cells" id="workers"></div>
+      <div class="empty" id="workers-empty" hidden>
+        Nenhum nó registrado no serviço de nomes. Suba os nós em contêiner com
+        <code>docker compose up -d</code>, e o nó de fora do Docker com
+        <code>scripts/host_worker.sh</code>.
+      </div>
+    </section>
+  </div>
+
+  <section class="bank">
+    <h2>Tarefas por nó
+      <span class="hint">tempo →, um trecho por nó que executou</span></h2>
+    <div class="lanes" id="lanes"></div>
+    <div class="empty" id="lanes-empty" hidden>
+      Nenhuma tarefa ainda. Submeta uma com
+      <code>./grid submit pi --steps 20 --wait</code>, ou doze de uma vez com
+      <code>./grid bench --count 12</code>.
+    </div>
+  </section>
+
+  <div class="split">
+    <section class="bank">
+      <h2>Tarefas</h2>
+      <table><thead><tr>
+        <th>Tarefa</th><th>Receita</th><th>Nó</th>
+        <th class="r">Passo</th><th>Estado</th>
+      </tr></thead><tbody id="tasks"></tbody></table>
+    </section>
+
+    <section class="bank">
+      <h2>Chamadas remotas
+        <span class="hint">capturadas pelo interceptador</span></h2>
+      <table><thead><tr>
+        <th>Método</th><th>Origem</th><th class="r">Resposta</th><th>Status</th>
+      </tr></thead><tbody id="traces"></tbody></table>
+      <div class="empty" id="traces-empty" hidden>
+        Nenhuma chamada ainda. Qualquer comando do cliente aparece aqui com o
+        tempo de resposta e o endereço de origem.
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* Tudo que vem de fora e inserido como TEXTO, nunca como marcacao.
+   Nao e zelo: `recipe`, `client_id` e a mensagem de erro da tarefa sao
+   escolhidos por quem submete a tarefa. Montar esses valores com innerHTML
+   daria a qualquer cliente a capacidade de executar script no painel de quem
+   esta assistindo. */
+function h(tag, attrs, children){
+  const node = document.createElement(tag);
+  if (attrs) for (const k in attrs){
+    if (attrs[k] === null || attrs[k] === undefined) continue;
+    if (k === "class") node.className = attrs[k];
+    else if (k === "style") node.setAttribute("style", attrs[k]);
+    else if (k === "title") node.title = attrs[k];
+    else node.setAttribute(k, attrs[k]);
+  }
+  (children || []).forEach(function(c){
+    if (c === null || c === undefined || c === false) return;
+    node.appendChild(typeof c === "object" ? c : document.createTextNode(String(c)));
+  });
+  return node;
+}
+function texto(tag, cls, valor, title){
+  return h(tag, {class: cls, title: title}, [valor]);
+}
+function substitui(id, nos){
+  const alvo = document.getElementById(id);
+  alvo.textContent = "";
+  nos.forEach(function(n){ alvo.appendChild(n); });
+}
+const $ = function(id){ return document.getElementById(id); };
+
+const estado = {workers: [], leader: null, queue_depth: {}, tasks: [], traces: [],
+                broker_ok: null, consul_ok: null};
+
+const ESTADOS = {
+  received:   ["na fila",      "idle"],
+  running:    ["executando",   "live"],
+  checkpoint: ["ponto salvo",  "live"],
+  migrated:   ["migrada",      "warn"],
+  done:       ["concluída",    "live"],
+  failed:     ["falhou",       "fault"],
+};
+function rotulo(s){ return (ESTADOS[s] || [s, "idle"])[0]; }
+function lampe(s){ return (ESTADOS[s] || [s, "idle"])[1]; }
+function curto(id){ return String(id || "").slice(0, 8); }
+
+/* ------------------------------------------------------------- barra topo */
+function pintaTopo(){
+  const naFila = Object.keys(estado.queue_depth)
+    .reduce(function(a, k){ return a + (estado.queue_depth[k] || 0); }, 0);
+  $("queued").textContent = naFila;
+
+  const barras = [];
+  for (let i = 0; i < 10; i++)
+    barras.push(h("i", {class: i < Math.min(naFila, 10) ? "on" : ""}, []));
+  substitui("bars", barras);
+
+  $("done").textContent = estado.tasks.filter(function(t){
+    return t.state === "done"; }).length;
+  $("total").textContent = estado.tasks.length;
+  $("migs").textContent = estado.tasks.reduce(function(a, t){
+    return a + (t.migrations || 0); }, 0);
+
+  const quebrado = [];
+  if (estado.consul_ok === false) quebrado.push("serviço de nomes");
+  if (estado.broker_ok === false) quebrado.push("broker");
+  const saude = $("health");
+  saude.textContent = quebrado.length ? quebrado.join(" e ") + " fora do ar" : "no ar";
+  saude.className = quebrado.length ? "offline" : "ok";
+}
+
+/* ------------------------------------------------------------ coordenador */
+function pintaCoordenadores(){
+  const lider = estado.leader;
+  $("coords-empty").hidden = !!lider;
+  const nos = ["coord-1", "coord-2"].map(function(nome){
+    const eLider = !!(lider && String(lider.internal || "").indexOf(nome) === 0);
+    return h("div", {class: "coord" + (eLider ? " leading" : "")}, [
+      h("span", {class: "lamp " + (eLider ? "live" : "")}, []),
+      h("span", {}, [
+        h("b", {}, [nome]),
+        texto("span", "addr", eLider ? (lider.external || "") : "em espera"),
+      ]),
+      texto("span", "role", eLider ? "LÍDER" : "RÉPLICA"),
+    ]);
+  });
+  substitui("coords", nos);
+}
+
+/* ------------------------------------------------------------------- nós */
+function pintaWorkers(){
+  $("workers-empty").hidden = estado.workers.length > 0;
+  $("worker-count").textContent = estado.workers.length
+    ? estado.workers.length + " registrados" : "";
+
+  substitui("workers", estado.workers.map(function(w){
+    const vivo = w.status === "passing";
+    const ambiente = w.virt === "process-vm" ? "VM de processo" : "contêiner";
+    const detalhe = (vivo ? "respondendo" : "sem resposta") + (w.os ? " · " + w.os : "");
+    const extras = (w.capabilities || []).filter(function(c){ return c !== "generic"; });
+    return h("div", {class: "cell"}, [
+      h("span", {class: "lamp " + (vivo ? "live" : "fault")}, []),
+      h("span", {class: "name"}, [w.id, texto("small", null, detalhe)]),
+      h("span", {class: "tagline"}, [
+        texto("span", "tag isa", w.arch || "?"),
+        texto("span", "tag vm", ambiente),
+      ].concat(extras.map(function(c){ return texto("span", "tag", c); }))),
+    ]);
+  }));
+}
+
+/* --------------------------------------------------------- raias (o hero) */
+function pintaRaias(){
+  const comTrilha = estado.tasks.filter(function(t){
+    return (t.trail || []).length; });
+  $("lanes-empty").hidden = comTrilha.length > 0;
+  const caixa = $("lanes");
+  caixa.textContent = "";
+  if (!comTrilha.length) return;
+
+  const nos = [];
+  comTrilha.forEach(function(t){
+    (t.trail || []).forEach(function(s){
+      if (s.worker_id && nos.indexOf(s.worker_id) < 0) nos.push(s.worker_id);
+    });
+  });
+
+  let t0 = Infinity, t1 = 0;
+  comTrilha.forEach(function(t){
+    t0 = Math.min(t0, t.first_at || 0);
+    t1 = Math.max(t1, t.at || 0);
+  });
+  if (!isFinite(t0)) return;
+  t1 = Math.max(t1, t0 + 10);
+  const escala = function(ts){ return ((ts - t0) / (t1 - t0)) * 100; };
+
+  const cotovelos = [];
+  const ALTURA = 30;
+
+  nos.forEach(function(no, linha){
+    const trechos = [];
+    comTrilha.forEach(function(t){
+      (t.trail || []).forEach(function(s, i){
+        if (s.worker_id !== no) return;
+        const proximo = (t.trail || [])[i + 1];
+        const inicio = escala(s.at);
+        const fim = escala(proximo ? proximo.at : (t.at || s.at));
+        const largura = Math.max(1.2, fim - inicio);
+        const cedida = s.closed && s.state === "migrated";
+        trechos.push(h("span", {
+          class: "seg state-" + (s.state || "running"),
+          style: "left:" + inicio.toFixed(2) + "%;width:" + largura.toFixed(2) + "%",
+          title: curto(t.task_id) + " · passos " + s.from_step + "–" + s.to_step
+                 + (s.arch ? " · " + s.arch : ""),
+        }, [cedida ? h("span", {class: "notch"}, []) : null]));
+
+        if (proximo && proximo.worker_id !== no){
+          const destino = nos.indexOf(proximo.worker_id);
+          if (destino > linha) cotovelos.push({x: fim, de: linha, para: destino});
+        }
+      });
+    });
+    caixa.appendChild(h("div", {class: "lane"}, [
+      texto("span", "who", no),
+      h("span", {class: "track"}, trechos),
+    ]));
+  });
+
+  // Os cotovelos vao por cima, atravessando as raias.
+  const trilhos = caixa.querySelectorAll(".track");
+  if (!trilhos.length) return;
+  const largura = trilhos[0].offsetWidth;
+  const base = trilhos[0].offsetLeft;
+  cotovelos.forEach(function(m){
+    caixa.appendChild(h("span", {
+      class: "elbow",
+      style: "left:" + (base + (m.x / 100) * largura).toFixed(0) + "px;"
+           + "top:" + (m.de * ALTURA + 22) + "px;"
+           + "height:" + ((m.para - m.de) * ALTURA - 6) + "px",
+    }, []));
+  });
+}
+
+/* --------------------------------------------------------------- tabelas */
+function pintaTarefas(){
+  const recentes = estado.tasks.slice().reverse().slice(0, 14);
+  substitui("tasks", recentes.map(function(t){
+    const noCelula = t.worker_id
+      ? h("td", {}, [t.worker_id, t.arch ? texto("span", "dim", " " + t.arch) : null])
+      : h("td", {}, [texto("span", "dim", "aguardando nó")]);
+    const estadoCelula = h("td", {}, [
+      h("span", {class: "lamp inline " + lampe(t.state)}, []),
+      rotulo(t.state),
+      t.migrations ? texto("span", "dim", " (" + t.migrations + "×)") : null,
+      t.error ? h("br", {}, []) : null,
+      t.error ? texto("span", "bad", String(t.error).split("\n")[0]) : null,
+    ]);
+    return h("tr", {}, [
+      texto("td", "id", curto(t.task_id)),
+      h("td", {}, [t.recipe || "—"]),
+      noCelula,
+      texto("td", "r num", String(t.step || 0)),
+      estadoCelula,
+    ]);
+  }));
+}
+
+function pintaChamadas(){
+  const recentes = estado.traces.slice().reverse().slice(0, 12);
+  $("traces-empty").hidden = recentes.length > 0;
+  substitui("traces", recentes.map(function(t){
+    const ok = (t.code || "OK") === "OK";
+    return h("tr", {}, [
+      h("td", {}, [String(t.method || "").split("/").pop()]),
+      h("td", {class: "id"}, [
+        t.peer || "—",
+        t.client_id ? h("br", {}, []) : null,
+        t.client_id ? texto("span", "dim", t.client_id) : null,
+      ]),
+      texto("td", "r num", Number(t.elapsed_ms || 0).toFixed(1) + " ms"),
+      texto("td", ok ? "ok" : "bad", t.code || "OK"),
+    ]);
+  }));
+}
+
+function pintaTudo(){
+  pintaTopo(); pintaCoordenadores(); pintaWorkers();
+  pintaRaias(); pintaTarefas(); pintaChamadas();
+}
+
+/* ------------------------------------------------------------ transporte */
+function aplica(mensagem){
+  const d = mensagem.dados || {};
+  if (mensagem.tipo === "inicial" || mensagem.tipo === "presenca"){
+    for (const k in d) estado[k] = d[k];
+  } else if (mensagem.tipo === "tarefa"){
+    const i = estado.tasks.findIndex(function(t){ return t.task_id === d.task_id; });
+    if (i < 0) estado.tasks.push(d); else estado.tasks[i] = d;
+  } else if (mensagem.tipo === "rpc"){
+    estado.traces.push(d);
+    if (estado.traces.length > 60) estado.traces.shift();
+  }
+  pintaTudo();
+}
+
+fetch("/api/state")
+  .then(function(r){ return r.json(); })
+  .then(function(s){ for (const k in s) estado[k] = s[k]; pintaTudo(); })
+  .catch(pintaTudo);
+
+const fonte = new EventSource("/events");
+fonte.onmessage = function(e){
+  try { aplica(JSON.parse(e.data)); } catch (_) {}
+};
+window.addEventListener("resize", pintaRaias);
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Atalho para a aplicacao cliente do MiniGrid.
+#
+#     ./grid submit pi --steps 20 --wait
+#     ./grid submit img.filter --input foto.png --output menor.png --wait
+#     ./grid workers
+#     ./grid recipes
+#     ./grid bench --count 12
+#
+# Embrulha `docker compose run`, para que usar o cliente nao exija instalar
+# `grpcio` na sua maquina. O `--rm` descarta o conteiner ao sair.
+#
+# (O nome do script e `grid` e nao `minigrid` por um motivo prosaico: `minigrid`
+# ja e o diretorio do pacote Python na raiz do projeto.)
+set -euo pipefail
+cd "$(dirname "$0")"
+exec docker compose --profile cli run --rm -T client "$@"

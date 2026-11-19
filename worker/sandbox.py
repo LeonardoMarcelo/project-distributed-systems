@@ -33,14 +33,25 @@ _RUNNER = os.path.join(_HERE, "_runner.py")
 class Limits(object):
     """Limites de recurso aplicados ao passo.
 
-    Espelham de proposito os limites de cgroup dos conteineres de worker
-    (`cpus: 0.5`, `mem_limit: 256m`), para o relatorio poder comparar os dois
-    ambientes na mesma unidade.
+    Sobre `address_space_mb`, que custou um defeito para ser entendido:
+    `RLIMIT_AS` limita *espaco de enderecamento virtual*, nao memoria residente.
+    Uma camada de emulacao de ISA reserva muito espaco virtual para as proprias
+    estruturas de traducao — medido neste projeto, o worker `linux/amd64` sob
+    Rosetta precisa de pelo menos 768 MB so para iniciar, enquanto o `linux/arm64`
+    nativo roda com 192 MB. Com o limite baixo, *toda* tarefa no worker emulado
+    morria antes do primeiro passo com `rosetta error: mmap_anonymous_rw mmap
+    failed`, e o nó aparecia como se nunca pegasse trabalho.
+    O padrao e 1 GB por isso.
+
+    Consequencia para o relatorio: o teto de memoria real dos conteineres vem do
+    *cgroup* (`mem_limit`), que e aplicado pelo kernel. `RLIMIT_AS` aqui e uma
+    guarda secundaria contra alocacao desgovernada dentro da VM de processo —
+    util onde nao ha cgroup, como no worker do host.
     """
 
     __slots__ = ("cpu_seconds", "address_space_mb", "file_size_mb", "wall_seconds")
 
-    def __init__(self, cpu_seconds=10, address_space_mb=256, file_size_mb=16,
+    def __init__(self, cpu_seconds=10, address_space_mb=1024, file_size_mb=16,
                  wall_seconds=60):
         self.cpu_seconds = cpu_seconds
         self.address_space_mb = address_space_mb

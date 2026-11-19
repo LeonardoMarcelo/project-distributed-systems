@@ -30,6 +30,7 @@ class FakeTransport(object):
         self.events = []        # [(kind, payload)]
         self.checkpoints = {}   # task_id -> state
         self.results = []       # [(result_bytes, meta)]
+        self.failures = []      # [(task_id, error, meta)]
         self.cleared = []
 
     def publish_event(self, kind, payload):
@@ -47,6 +48,9 @@ class FakeTransport(object):
 
     def send_result(self, task_id, result, meta):
         self.results.append((result, meta))
+
+    def report_failure(self, task_id, error, meta):
+        self.failures.append((task_id, error, meta))
 
     def kinds(self):
         return [kind for kind, _ in self.events]
@@ -238,3 +242,47 @@ def test_events_carry_task_id_and_worker_identity(fake):
 def test_result_meta_is_json_serializable(fake):
     executor.run_task(env(PI_STEP, params={"steps": "1"}), fake, "w1", L)
     json.dumps(fake.results[0][1])
+
+
+# ------------------------------------------------- falha chega ao caminho duravel
+
+def test_step_error_is_also_reported_durably(fake):
+    """Evento `failed` nao basta: ele e transiente por desenho.
+
+    Sem o relato duravel, o estado autoritativo da tarefa ficava `received`
+    para sempre — `GetStatus` mentia e `watch()` nunca retornava.
+    """
+    code = "def step(state, data, api): raise ValueError('boom')\n"
+    executor.run_task(env(code), fake, "w1", L)
+    assert len(fake.failures) == 1
+    task_id, error, meta = fake.failures[0]
+    assert task_id == "t1" and "boom" in error
+    assert meta["worker_id"] == "w1" and meta["arch"] == platform.machine()
+
+
+def test_oversized_checkpoint_failure_is_reported_durably(fake):
+    code = "def step(state, data, api): return {'blob': 'x' * 600000}, False, None\n"
+    executor.run_task(env(code), fake, "w1", L)
+    assert len(fake.failures) == 1
+    assert "checkpoint" in fake.failures[0][1].lower()
+
+
+def test_step_limit_failure_is_reported_durably(fake):
+    code = "def step(state, data, api): return {'n': state.get('n', 0) + 1}, False, None\n"
+    executor.run_task(env(code), fake, "w1", L, max_steps=3)
+    assert len(fake.failures) == 1
+    assert "passos" in fake.failures[0][1].lower()
+
+
+def test_success_reports_no_failure(fake):
+    executor.run_task(env(PI_STEP, params={"steps": "2"}), fake, "w1", L)
+    assert fake.failures == []
+
+
+def test_a_broken_failure_report_does_not_mask_the_task_failure(fake):
+    """Se o relato duravel falhar, a tarefa ainda tem de voltar como `failed`."""
+    def explode(task_id, error, meta):
+        raise RuntimeError("fila de resultados fora do ar")
+    fake.report_failure = explode
+    code = "def step(state, data, api): raise ValueError('boom')\n"
+    assert executor.run_task(env(code), fake, "w1", L) == "failed"

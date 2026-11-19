@@ -1,3 +1,25 @@
+# Orquestracao do MiniGrid (item G do enunciado).
+#
+# Todas as portas publicadas sao parametrizaveis, com os valores do enunciado
+# como padrao. Numa maquina limpa `docker compose up -d` basta; numa maquina de
+# desenvolvimento onde 8080 ja esteja ocupado, copie `.env.example` para `.env`
+# e ajuste. Isso existe porque o avaliador vai rodar isto numa maquina que ja
+# tem as proprias coisas de pe.
+#
+#     docker compose up -d
+#
+# sobe o sistema inteiro numa maquina limpa: servico de nomes, broker de
+# mensagens, duas replicas de coordenador, tres workers em conteiner e o painel.
+# Nenhum passo de build manual antes; nenhuma ordem magica de comandos.
+#
+# As dependencias sao por `condition: service_healthy`, nao por ordem de
+# declaracao. Isso importa: `depends_on` sem condicao so garante ordem de
+# *inicio*, e um coordenador que tenta falar com um RabbitMQ que ainda esta
+# subindo falharia. Com healthcheck, o compose espera o servico ficar pronto.
+#
+# O quarto worker — a VM de processo do item D — NAO esta aqui de proposito. Ele
+# roda fora do Docker, sobe por `scripts/host_worker.sh`, e o sistema funciona
+# sem ele. Ver o README.
 name: minigrid
 
 networks:
@@ -7,20 +29,55 @@ networks:
 volumes:
   consul_data:
   rabbitmq_data:
+  # Compartilhado pelas duas replicas de coordenador: envelopes submetidos e
+  # blobs de resultado. Nao vao para o Consul KV porque o limite dele e 512 KB
+  # por valor e o payload do MiniGrid vai a 8 MB.
+  minigrid_blobs:
+
+x-worker-base: &worker-base
+  build:
+    context: .
+    dockerfile: worker/Dockerfile
+  restart: unless-stopped
+  networks: [minigrid_net]
+  depends_on:
+    consul: {condition: service_healthy}
+    rabbitmq: {condition: service_healthy}
+  # Limites de CPU e memoria declarados, exigidos pelo item D. Aplicados por
+  # cgroups — ao contrario da VM de processo no macOS, onde o limite de memoria
+  # nao e honrado pelo kernel e o proprio sandbox declara isso.
+  cpus: 0.5
+  mem_limit: 512m         # folga para o custo real da camada de emulacao
+
+x-worker-env: &worker-env
+  MINIGRID_CONSUL: http://consul:8500
+  MINIGRID_AMQP: amqp://guest:guest@rabbitmq:5672/%2F
+  MINIGRID_QUEUE: minigrid.tasks
+  MINIGRID_RESULTS_QUEUE: minigrid.results
+  MINIGRID_EVENTS_EXCHANGE: minigrid.events
+  MINIGRID_KV_PREFIX: minigrid/
+  MINIGRID_CHECKPOINT_EVERY: "1"
+  MINIGRID_TTL: "10"
+  MINIGRID_HEARTBEAT: "4"
+  MINIGRID_CPU_SECONDS: "60"
+  # 1 GB de espaco de enderecamento VIRTUAL, nao residente. O worker emulado
+  # precisa disso para as estruturas do Rosetta/QEMU; com menos, toda tarefa
+  # nele morria antes do primeiro passo. O teto de memoria real e o mem_limit
+  # do cgroup, abaixo.
+  MINIGRID_MEM_MB: "1024"
+  MINIGRID_WALL_SECONDS: "180"
 
 services:
-  # Serviço de nomes e coordenação (item F).
-  # Registro de serviços por health check TTL, KV com lock de sessão para eleição.
+  # ------------------------------------------------ servico de nomes (item F)
   consul:
     image: hashicorp/consul:1.19
     container_name: minigrid-consul
     command: agent -dev -client=0.0.0.0 -ui -log-level=warn
     ports:
-      - "8500:8500"
+      - "${MINIGRID_CONSUL_PORT:-8500}:8500"
     volumes:
       - consul_data:/consul/data
-    networks:
-      - minigrid_net
+    networks: [minigrid_net]
     healthcheck:
       test: ["CMD", "consul", "members"]
       interval: 3s
@@ -28,24 +85,163 @@ services:
       retries: 20
       start_period: 3s
 
-  # Middleware orientado a mensagens (item C).
-  # AMQP para os workers em contêiner, STOMP para o worker do host.
+  # ------------------------------------- middleware de mensagens (item C)
   rabbitmq:
     image: rabbitmq:3.13-management
     container_name: minigrid-rabbitmq
     hostname: minigrid-rabbitmq
     ports:
-      - "5672:5672"     # AMQP
-      - "15672:15672"   # UI de gerenciamento
-      - "61613:61613"   # STOMP
+      - "${MINIGRID_AMQP_PORT:-5672}:5672"       # AMQP, workers em conteiner
+      - "${MINIGRID_RABBIT_UI_PORT:-15672}:15672"  # UI (guest/guest)
+      - "${MINIGRID_STOMP_PORT:-61613}:61613"   # STOMP, worker do host
     volumes:
       - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
       - rabbitmq_data:/var/lib/rabbitmq/mnesia
-    networks:
-      - minigrid_net
+    networks: [minigrid_net]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
       interval: 5s
       timeout: 10s
       retries: 20
       start_period: 15s
+
+  # ------------------------------- coordenador, duas replicas (itens B e F)
+  coord-1:
+    build:
+      context: .
+      dockerfile: coordinator/Dockerfile
+    container_name: minigrid-coord-1
+    restart: unless-stopped
+    environment:
+      MINIGRID_NAME: coord-1
+      MINIGRID_PORT: "50051"
+      MINIGRID_CONSUL: http://consul:8500
+      MINIGRID_AMQP: amqp://guest:guest@rabbitmq:5672/%2F
+      MINIGRID_INTERNAL_ADDR: coord-1:50051
+      MINIGRID_EXTERNAL_ADDR: localhost:${MINIGRID_COORD1_PORT:-50051}
+      MINIGRID_BLOBS: /blobs
+    ports:
+      - "${MINIGRID_COORD1_PORT:-50051}:50051"
+    volumes:
+      - minigrid_blobs:/blobs
+    networks: [minigrid_net]
+    depends_on:
+      consul: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+
+  coord-2:
+    build:
+      context: .
+      dockerfile: coordinator/Dockerfile
+    container_name: minigrid-coord-2
+    restart: unless-stopped
+    environment:
+      MINIGRID_NAME: coord-2
+      MINIGRID_PORT: "50051"
+      MINIGRID_CONSUL: http://consul:8500
+      MINIGRID_AMQP: amqp://guest:guest@rabbitmq:5672/%2F
+      MINIGRID_INTERNAL_ADDR: coord-2:50051
+      MINIGRID_EXTERNAL_ADDR: localhost:${MINIGRID_COORD2_PORT:-50052}
+      MINIGRID_BLOBS: /blobs
+    ports:
+      - "${MINIGRID_COORD2_PORT:-50052}:50051"
+    volumes:
+      - minigrid_blobs:/blobs
+    networks: [minigrid_net]
+    depends_on:
+      consul: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+
+  # ------------------------------------- workers heterogeneos (item D)
+  #
+  # Mesma receita de imagem, duas arquiteturas FIXADAS. Em qualquer host,
+  # exatamente um dos dois esta emulado: no Apple Silicon e o amd64, num PC
+  # x86_64 (e no runner do CI) e o arm64. Isso elimina a dependencia da
+  # arquitetura de quem corrige — nao ha "o nativo e o emulado", ha os dois
+  # declarados, e o sistema reporta qual foi qual.
+  worker-a:
+    <<: *worker-base
+    container_name: minigrid-worker-a
+    platform: linux/amd64
+    environment:
+      <<: *worker-env
+      MINIGRID_WORKER_ID: worker-a-amd64
+      MINIGRID_VIRT: container
+      MINIGRID_CAPS: generic
+
+  worker-b:
+    <<: *worker-base
+    container_name: minigrid-worker-b
+    platform: linux/arm64
+    environment:
+      <<: *worker-env
+      MINIGRID_WORKER_ID: worker-b-arm64
+      MINIGRID_VIRT: container
+      MINIGRID_CAPS: generic
+
+  # Worker que embrulha o programa legado (item A). Plataforma nativa: emular a
+  # ISA *e* processar imagem no mesmo no multiplicaria o tempo de cada tarefa
+  # sem acrescentar nada ao que o item D exige.
+  worker-legacy:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile.legacy
+    container_name: minigrid-worker-legacy
+    restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 512m          # ImageMagick precisa de mais folga que o generico
+    networks: [minigrid_net]
+    depends_on:
+      consul: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+    environment:
+      <<: *worker-env
+      MINIGRID_WORKER_ID: worker-legacy
+      MINIGRID_VIRT: container
+      MINIGRID_CAPS: legacy:imagemagick
+      MINIGRID_QUEUE: minigrid.tasks.legacy
+
+  # --------------------------------------------- painel de monitoramento
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: minigrid-dashboard
+    restart: unless-stopped
+    ports:
+      - "${MINIGRID_DASHBOARD_PORT:-8080}:8080"
+    environment:
+      MINIGRID_CONSUL: http://consul:8500
+      MINIGRID_AMQP: amqp://guest:guest@rabbitmq:5672/%2F
+      MINIGRID_RABBIT_MGMT: http://guest:guest@rabbitmq:15672/api
+      MINIGRID_EVENTS_EXCHANGE: minigrid.events
+      MINIGRID_KV_PREFIX: minigrid/
+    networks: [minigrid_net]
+    depends_on:
+      consul: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+
+  # ------------------------------------------- aplicacao cliente (item A)
+  #
+  # Sem `command`: existe para ser invocada com `docker compose run`, pelo
+  # atalho `./minigrid`. Esta conteinerizada porque precisa de `grpcio`, que tem
+  # extensao compilada — e a meta de zero instalacao na maquina vale aqui
+  # tambem. O unico processo fora do Docker e o worker do host.
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    environment:
+      MINIGRID_CONSUL: http://consul:8500
+      MINIGRID_INSIDE_DOCKER: "1"
+    # A pasta do projeto entra como diretorio de trabalho do cliente. Sem isso
+    # `--input foto.png` nao acha nada: o conteiner nao ve o sistema de
+    # arquivos de quem o chamou, e as duas flags mais uteis do CLI ficariam
+    # inutilizaveis.
+    volumes:
+      - ./:/work
+    working_dir: /work
+    networks: [minigrid_net]
+    depends_on:
+      consul: {condition: service_healthy}
+    profiles: ["cli"]        # nao sobe com `up`; so por `run`

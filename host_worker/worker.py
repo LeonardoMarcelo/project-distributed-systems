@@ -60,7 +60,7 @@ class HostConfig(object):
         self.yield_after_steps = int(env.get("MINIGRID_YIELD_AFTER_STEPS", "0"))
         self.limits = sandbox.Limits(
             cpu_seconds=int(env.get("MINIGRID_CPU_SECONDS", "30")),
-            address_space_mb=int(env.get("MINIGRID_MEM_MB", "256")),
+            address_space_mb=int(env.get("MINIGRID_MEM_MB", "1024")),
             file_size_mb=int(env.get("MINIGRID_FSIZE_MB", "16")),
             wall_seconds=int(env.get("MINIGRID_WALL_SECONDS", "120")),
         )
@@ -116,17 +116,23 @@ class StompTransport(executor.Transport):
         except Exception:
             pass
 
-    def send_result(self, task_id, result, meta):
+    def _report(self, task_id, state, result, error, meta):
         import base64
         body = json.dumps({
             "task_id": task_id,
-            "state": "done",
-            "error": "",
+            "state": state,
+            "error": error or "",
             "result_b64": base64.b64encode(result or b"").decode("ascii"),
             "meta": {str(k): str(v) for k, v in (meta or {}).items()},
         }).encode("utf-8")
         self.client.send("/amq/queue/" + self.config.results_queue, body,
                          persistent=True)
+
+    def send_result(self, task_id, result, meta):
+        self._report(task_id, "done", result, "", meta)
+
+    def report_failure(self, task_id, error, meta):
+        self._report(task_id, "failed", b"", error, meta)
 
 
 class HostWorker(object):

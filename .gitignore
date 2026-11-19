@@ -14,3 +14,6 @@ tests/_out/
 
 # workspace do executor de planos
 .superpowers/
+
+# override local de portas
+.env
