@@ -625,3 +625,116 @@ Nota sobre o nome do repositório: o autor pediu `project_system_distribuieds`, 
 inglês". `distribuieds` não é palavra inglesa, então o nome adotado é
 `project-distributed-systems`. Como o repositório só é criado na última tarefa, trocar
 isso não tem custo.
+
+---
+
+## 12. O que a construção mudou no desenho, e por quê
+
+Este documento é o registro do que foi decidido **antes** de construir. A seção
+abaixo registra onde a implementação divergiu dele, para quem ler o projeto não
+precisar adivinhar qual dos dois está certo. As decisões que mudaram, mudaram
+por evidência — quase toda ela só apareceu quando o sistema subiu de verdade.
+
+### 12.1 Defeitos que a execução real revelou
+
+**O worker emulado não executava nenhuma tarefa.** O §7.4 previa
+`RLIMIT_AS` de 192 MB nos workers. `RLIMIT_AS` limita *espaço de endereçamento
+virtual*, e a camada de emulação de ISA reserva muito espaço virtual para as
+próprias estruturas de tradução. Toda tarefa no `worker-a` (linux/amd64 sob
+Rosetta) morria antes do primeiro passo com
+`rosetta error: mmap_anonymous_rw mmap failed`. Medido: o emulado precisa de
+**≥768 MB** só para iniciar (falha em 192 e em 384, passa em 768); o nativo roda
+com 192 MB. O padrão subiu para 1 GB e o `mem_limit` do cgroup para 512m.
+
+A parte importante: **a quebra era invisível**. O nó aparecia registrado e
+saudável no painel e no serviço de nomes, e simplesmente nunca entregava nada. O
+item D estava morto sem nenhum sinal de erro. Antes da correção, 0 de 12 tarefas
+no nó emulado; depois, ele passou a executar normalmente.
+
+Consequência para o relatório: o teto de memória real dos contêineres vem do
+*cgroup*, que é aplicado pelo kernel. `RLIMIT_AS` é uma guarda secundária,
+relevante onde não há cgroup — isto é, no nó de VM de processo.
+
+**Falha de tarefa nunca chegava ao estado autoritativo.** Só o resultado de
+sucesso passava pela fila durável; a falha apenas publicava um evento, que é
+transiente por desenho (§7.9). O estado no serviço de nomes ficava `received`
+para sempre. Três consequências visíveis para quem usa: `GetStatus` mentia,
+`watch()` esperava um evento terminal que já havia passado e nunca retornava, e
+o reaper enxergava a tarefa como viva. Corrigido com
+`Transport.report_failure`, que relata a falha pelo mesmo caminho durável do
+resultado.
+
+**`GetStatus` não reportava progresso.** O estado saltava de `received` direto
+para `done`, com `worker_id` vazio e `step` em zero durante toda a execução,
+pelo mesmo motivo: os eventos de ciclo de vida não eram gravados em lugar
+nenhum. Isso quebrava uma das três operações que o enunciado nomeia. Corrigido
+com `worker/progress.py`, que projeta `running`/`checkpoint`/`migrated` no KV;
+quem escreve é o nó que detém o lock de posse, logo não há escritores
+concorrentes.
+
+**O orçamento de retentativa do cliente era menor que o failover medido.** O
+§7.3 mediu ~20 s de failover por expiração de TTL, mas o cliente desistia em
+~15 s (5 tentativas com recuo exponencial) — a transparência de falhas quebrava
+exatamente no caso que ela existe para cobrir. O limite passou a ser um
+*deadline* de 45 s, não uma contagem de tentativas.
+
+**O limite de payload anunciado era falso.** O §7.6 declara 8 MB, mas o teto
+padrão de mensagem do gRPC é 4 MB, então um payload de 8 MB era recusado pelo
+transporte com `RESOURCE_EXHAUSTED` antes de chegar à validação. O limite real
+era metade do documentado, e o erro era opaco. Corrigido com
+`envelope.GRPC_MAX_MESSAGE`, aplicado nas três pontas a partir de uma constante
+única.
+
+### 12.2 Decisões que mudaram por engenharia
+
+| Previsto | Implementado | Motivo |
+|---|---|---|
+| `RLIMIT_NPROC` entre os limites do sandbox | ausente | É um limite por *usuário*, não por processo; com a máquina do avaliador rodando centenas de processos, recusaria qualquer `fork`, inclusive o do wrapper legado. A criação de processo passou a ser controlada pela superfície da API |
+| Sessão do worker com `Behavior=delete` | `Behavior=release` | Com `delete`, a morte do nó apagaria a chave `owner` junto com o lock, e o reaper — que procura justamente por tarefas cujo dono desapareceu — não teria o que republicar. O terceiro gatilho de migração ficaria morto |
+| Atalho do cliente chamado `./minigrid` | `./grid` | `minigrid` já é o diretório do pacote Python na raiz |
+| Portas fixas | `${VAR:-padrão}` com `.env.example` | O avaliador roda isto numa máquina que já tem as próprias coisas de pé |
+| Cliente sem volume | `./:/work` como diretório de trabalho | Sem isso o contêiner não vê os arquivos de quem o chamou, e `--input`/`--output` ficam inutilizáveis — o que impediria a demonstração do wrapper legado |
+
+### 12.3 Limitação que o sistema agora declara sozinho
+
+O §8.3 previa declarar no relatório que a VM de processo não isola por
+namespaces. A implementação foi além: o sandbox **reporta em tempo de execução**
+quais limites não foram aplicados, em `limits_skipped`. No macOS o kernel aceita
+`RLIMIT_AS` e o ignora, e nem `setrlimit` nem `getrlimit` revelam isso — então o
+sandbox declara a não-aplicação explicitamente, e o teste correspondente exige
+uma das duas coisas: limite aplicado, ou não-aplicação declarada. Não há
+caminho em que o sistema passe por isolado sem ser.
+
+### 12.4 Medições disponíveis para o relatório
+
+| O que | Valor medido |
+|---|---|
+| Failover do coordenador, parada graciosa | 0,21 s |
+| Failover do coordenador, queda abrupta (`docker kill`) | 20,15 s |
+| `RLIMIT_AS` mínimo para o nó emulado iniciar | 768 MB (falha em 384) |
+| Custo de um passo: nativo vs emulado | 0,04 s vs 0,18 s (~4,5×) |
+| Limite de memória: contêiner nativo | `MemoryError`, aplicado |
+| Limite de memória: contêiner emulado | morto por sinal (`rosetta mmap failed`) |
+| Limite de memória: VM de processo no macOS | **não aplicado**, e declarado |
+| Leitura de profundidade de fila: estatística vs autoritativa | 2–5 s de atraso vs 0,007 s |
+
+Custo de inicialização por ambiente (`scripts/bench_boot.sh`, 3 repetições, host
+`aarch64`, máquina sob carga — a razão entre ambientes é o que interessa):
+
+| Ambiente | Interface imitada | Média |
+|---|---|---|
+| Contêiner nativo | chamadas de sistema | 0,381 s |
+| Contêiner emulado | chamadas de sistema **+ conjunto de instruções** | 0,516 s (≈1,35× o nativo) |
+| VM de processo | biblioteca e linguagem | 0,050 s (≈7,6× mais barato que o contêiner) |
+
+A ordenação é a esperada e vale ser dita no relatório: quanto mais fina a camada
+que o ambiente imita, mais barato iniciá-lo. A VM de processo só precisa de um
+`fork`/`exec` de interpretador; o contêiner precisa de namespaces, cgroups e uma
+árvore de sistema de arquivos em camadas; o contêiner emulado paga tudo isso
+mais a tradução de instruções. O preço do isolamento aparece como tempo de
+partida — e é por isso que a comparação do item D não é um detalhe: ela mostra
+que não existe ambiente de virtualização "melhor", existe troca entre custo de
+partida e grau de isolamento.
+
+`scripts/bench_boot.sh` produz a tabela de custo de inicialização por ambiente
+em CSV; `./grid bench` produz a distribuição de tarefas por arquitetura.

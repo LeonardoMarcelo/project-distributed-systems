@@ -30,11 +30,24 @@ Quatro coisas para olhar enquanto roda:
 | Filas (RabbitMQ) | <http://localhost:15672> — `guest` / `guest` |
 | Coordenadores (gRPC) | `localhost:50051` e `localhost:50052` |
 
+Se alguma dessas portas já estiver ocupada na sua máquina — 8080 costuma estar —
+copie `.env.example` para `.env` e ajuste. O compose lê esse arquivo sozinho:
+
+```bash
+cp .env.example .env        # e edite a porta que conflitar
+```
+
 Para desligar e não deixar rastro na máquina:
 
 ```bash
 scripts/cleanup.sh
 ```
+
+O que esse comando remove, e onde cada coisa estava: imagens e volumes vivem
+dentro da VM do Docker, não no seu sistema de arquivos; código e documentos
+vivem apenas nesta pasta; e o nó que roda fora do Docker não escreve nada em
+disco além de diretórios temporários por tarefa, que ele próprio apaga. Não há
+`brew install`, `pip install`, daemon nem alteração de PATH em nenhum ponto.
 
 ---
 

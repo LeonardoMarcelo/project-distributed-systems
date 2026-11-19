@@ -99,14 +99,34 @@ def client():
     c.close()
 
 
+def _replica_responde(address, timeout=3):
+    """A réplica atende leitura? Serve de precondição aos testes de falha."""
+    stub, canal = _stub(address)
+    try:
+        stub.ListWorkers(pb.Empty(), timeout=timeout)
+        return True
+    except grpc.RpcError:
+        return False
+    finally:
+        canal.close()
+
+
 @pytest.fixture
 def restaura_stack():
-    """Devolve o sistema ao estado normal, aconteça o que acontecer no teste."""
+    """Devolve o sistema ao estado normal, aconteça o que acontecer no teste.
+
+    Esperar apenas "existe um líder" não basta: os testes de falha matam
+    contêineres em sequência, e um teste que começa com a réplica sobrevivente
+    ainda subindo mede o tempo de boot do Docker, não o failover do MiniGrid.
+    Por isso o teardown espera as *duas* réplicas voltarem a atender.
+    """
     yield
     _compose("up", "-d", "--scale", "worker-a=1", "--scale", "worker-b=1",
              check=False, timeout=300)
     _compose("start", "coord-1", "coord-2", "worker-a", "worker-b",
              "worker-legacy", check=False, timeout=300)
+    wait_until(lambda: _replica_responde(COORD1) and _replica_responde(COORD2),
+               timeout=120)
     wait_until(lambda: _leader_address(naming.Consul(CONSUL_URL)) is not None,
                timeout=60)
 
@@ -146,6 +166,56 @@ def _results_for(task_ids, timeout=120):
     finally:
         c.close()
     return prontos
+
+
+
+# ------------------------------------------------- controle de consumidores
+#
+# Varios testes precisam de uma fila SEM consumidor: "nada se perde com o
+# trabalhador desligado", "o envelope leva o codigo", "a mensagem e
+# persistente". Parar os workers pelo compose nao basta, porque o no de VM de
+# processo roda FORA do compose (item G) e continua consumindo a fila generica —
+# e o CI sobe esse no de proposito.
+#
+# A saida usa o proprio roteamento por capacidade do sistema: uma tarefa que
+# declara `legacy:imagemagick` vai para a fila que SO o worker legado consome, e
+# esse worker e um conteiner que o compose controla. Assim o teste fica
+# deterministico sem depender de quem mais esta de pe.
+#
+# O codigo enviado e o da receita `compress`, que nao chama o programa legado: a
+# capacidade aqui serve para *rotear*, nao porque a tarefa precise do
+# ImageMagick.
+CAPACIDADE_CONTROLADA = ["legacy:imagemagick"]
+
+
+def _submit_controlada(cliente, data=b"x" * 2048):
+    from minigrid import recipes
+
+    return cliente.submit("compress", data=data,
+                          code=recipes.load("compress"),
+                          params={"level": "6"},
+                          requires=CAPACIDADE_CONTROLADA)
+
+
+def _no_e_conteiner(status):
+    return (status.get("virt") or "") == "container"
+
+
+def _submit_ate_cair_em_conteiner(cliente, consul, params, tentativas=4):
+    """Submete ate a tarefa comecar num no que o compose consegue desligar.
+
+    O no de VM de processo nao pode ser parado daqui. Em vez de fingir
+    determinismo, o teste tenta algumas vezes e faz skip com motivo claro.
+    """
+    for _ in range(tentativas):
+        task_id = cliente.submit("pi", params=params)
+        chave = "minigrid/tasks/" + task_id + "/checkpoint"
+        if not wait_until(lambda: consul.kv_get(chave) is not None, timeout=180):
+            continue
+        status = cliente.status(task_id)
+        if _no_e_conteiner(status) and status.get("worker_id"):
+            return task_id, status
+    return None, None
 
 
 # =============================================================== item A
@@ -237,15 +307,15 @@ def test_c_fila_persistente_nao_perde_tarefa_com_worker_desligado(restaura_stack
     perca caso um trabalhador esteja desligado no momento do envio"."""
     from minigrid.client import MiniGridClient
 
-    _compose("stop", "worker-a", "worker-b", "worker-legacy", timeout=300)
+    _compose("stop", "worker-legacy", timeout=300)
     cliente = MiniGridClient(consul_url=CONSUL_URL)
     try:
-        ids = [cliente.submit("compress", data=b"x" * 2048) for _ in range(10)]
-        assert wait_until(lambda: queue_depth(TASKS_QUEUE) == 10, timeout=30), (
-            "as 10 tarefas deviam estar esperando na fila, com zero workers"
+        ids = [_submit_controlada(cliente) for _ in range(10)]
+        assert wait_until(lambda: queue_depth(LEGACY_QUEUE) == 10, timeout=30), (
+            "as 10 tarefas deviam estar esperando na fila, sem consumidor"
         )
-        _compose("start", "worker-b", timeout=300)
-        prontos = _results_for(ids, timeout=180)
+        _compose("start", "worker-legacy", timeout=300)
+        prontos = _results_for(ids, timeout=240)
     finally:
         cliente.close()
 
@@ -260,18 +330,18 @@ def test_c_mensagem_de_tarefa_e_persistente():
     dois precisam andar juntos, e é um erro clássico fazer só metade."""
     from minigrid.client import MiniGridClient
 
-    _compose("stop", "worker-a", "worker-b", timeout=300)
+    _compose("stop", "worker-legacy", timeout=300)
     cliente = MiniGridClient(consul_url=CONSUL_URL)
     try:
-        cliente.submit("compress", data=b"y" * 128)
-        assert wait_until(lambda: queue_depth(TASKS_QUEUE) >= 1, timeout=30)
-        espiada = mgmt("POST", "/queues/%2F/" + TASKS_QUEUE + "/get",
+        _submit_controlada(cliente, data=b"y" * 128)
+        assert wait_until(lambda: queue_depth(LEGACY_QUEUE) >= 1, timeout=30)
+        espiada = mgmt("POST", "/queues/%2F/" + LEGACY_QUEUE + "/get",
                        {"count": 1, "ackmode": "ack_requeue_true",
                         "encoding": "auto"})
         assert espiada[0]["properties"]["delivery_mode"] == 2
     finally:
         cliente.close()
-        _compose("start", "worker-a", "worker-b", timeout=300)
+        _compose("start", "worker-legacy", timeout=300)
 
 
 def test_c_pubsub_entrega_a_dois_assinantes_simultaneos(client):
@@ -382,11 +452,11 @@ def test_d_plataformas_fixadas_para_nao_depender_do_host():
 def test_e_tarefa_viaja_como_codigo_mais_dados(client):
     """"As tarefas devem ser enviadas aos trabalhadores como código acompanhado
     dos dados de entrada, caracterizando mobilidade fraca"."""
-    _compose("stop", "worker-a", "worker-b", timeout=300)
+    _compose("stop", "worker-legacy", timeout=300)
     try:
-        task_id = client.submit("pi", params={"steps": "1"})
-        assert wait_until(lambda: queue_depth(TASKS_QUEUE) >= 1, timeout=30)
-        espiada = mgmt("POST", "/queues/%2F/" + TASKS_QUEUE + "/get",
+        task_id = _submit_controlada(client, data=b"entrada")
+        assert wait_until(lambda: queue_depth(LEGACY_QUEUE) >= 1, timeout=30)
+        espiada = mgmt("POST", "/queues/%2F/" + LEGACY_QUEUE + "/get",
                        {"count": 10, "ackmode": "ack_requeue_true",
                         "encoding": "base64"})
         corpos = [envelope.decode(base64.b64decode(e["payload"]))
@@ -397,26 +467,34 @@ def test_e_tarefa_viaja_como_codigo_mais_dados(client):
             "o envelope nao leva o codigo: nao ha mobilidade de codigo, so "
             "uma chamada de funcao local"
         )
+        assert alvo[0]["data"] == b"entrada", (
+            "o envelope nao leva os dados de entrada junto do codigo"
+        )
     finally:
-        _compose("start", "worker-a", "worker-b", timeout=300)
+        _compose("start", "worker-legacy", timeout=300)
 
 
 def test_e_tarefa_migra_e_retoma_do_checkpoint(client, consul, restaura_stack):
     """"O sistema deve ser capaz de migrar uma tarefa em andamento para outro
     trabalhador quando o nó original for sobrecarregado ou desligado, retomando-a
     a partir do último ponto de verificação (checkpoint) salvo"."""
-    task_id = client.submit("pi", params={"steps": "16", "per_step": "40000"})
+    task_id, origem = _submit_ate_cair_em_conteiner(
+        client, consul, {"steps": "16", "per_step": "40000"})
+    if task_id is None:
+        pytest.skip("a tarefa nao caiu num no em conteiner em 4 tentativas; o no "
+                    "de VM de processo nao pode ser desligado deste teste")
+
     chave = "minigrid/tasks/" + task_id + "/checkpoint"
-
-    assert wait_until(lambda: consul.kv_get(chave) is not None, timeout=120), \
-        "a tarefa nem comecou a gravar checkpoint"
-    primeiro_no = client.status(task_id)["worker_id"]
-    assert primeiro_no, "nenhum no assumiu a tarefa"
-
+    primeiro_no = origem["worker_id"]
     passo_na_queda = json.loads(consul.kv_get(chave).decode())["n"]
     assert passo_na_queda >= 1
 
-    servico = "worker-a" if "worker-a" in primeiro_no else "worker-b"
+    if "worker-a" in primeiro_no:
+        servico = "worker-a"
+    elif "worker-b" in primeiro_no:
+        servico = "worker-b"
+    else:
+        servico = "worker-legacy"
     _compose("stop", servico, timeout=300)
 
     assert wait_until(
@@ -435,6 +513,23 @@ def test_e_tarefa_migra_e_retoma_do_checkpoint(client, consul, restaura_stack):
     assert json.loads(client.result(task_id))["steps"] == 16
 
 
+def _familia_de_arquitetura(arch):
+    """Normaliza o nome da ISA.
+
+    `arm64` e `aarch64` são a mesma arquitetura com nomes diferentes — o macOS
+    diz uma coisa e o Linux diz outra. Comparar as strings cruas faria o nó de
+    VM de processo no macOS passar por "arquitetura diferente" de um contêiner
+    Linux nativo, o que seria falso e exatamente o tipo de evidência fraca que
+    este teste existe para não aceitar.
+    """
+    arch = (arch or "").lower()
+    if arch in ("arm64", "aarch64", "armv8l"):
+        return "arm"
+    if arch in ("x86_64", "amd64", "x64"):
+        return "x86"
+    return arch or "?"
+
+
 def test_e_migracao_atravessa_arquiteturas_diferentes(client, consul, restaura_stack):
     """O caso difícil: o checkpoint é gravado numa ISA e retomado em outra.
 
@@ -442,27 +537,42 @@ def test_e_migracao_atravessa_arquiteturas_diferentes(client, consul, restaura_s
     o checkpoint é JSON, os dados são bytes. Este teste fecha a evidência que os
     testes de unidade não davam, porque lá os dois lados rodavam na mesma
     arquitetura.
+
+    Controlar *onde* a tarefa começa exige deixar de pé só o nó emulado entre os
+    contêineres. O nó de VM de processo, se estiver rodando, também consome a
+    mesma fila e não pode ser desligado daqui — então a submissão é repetida até
+    a tarefa cair no nó emulado, e o teste faz skip com motivo claro se isso não
+    acontecer. Fingir determinismo que não existe produziria um teste
+    intermitente, que é pior que um skip honesto.
     """
-    # Só o worker emulado de pé: a tarefa começa obrigatoriamente em x86_64.
-    _compose("stop", "worker-b", timeout=300)
+    _compose("stop", "worker-b", "worker-legacy", timeout=300)
     _compose("start", "worker-a", timeout=300)
     assert wait_until(
-        lambda: any(w["id"] == "worker-a-amd64" and w["Status"] == "passing"
-                    for w in [dict(x, Status=x["status"])
-                              for x in client.workers()["workers"]]),
-        timeout=60)
+        lambda: any(w["id"] == "worker-a-amd64" and w["status"] == "passing"
+                    for w in client.workers()["workers"]),
+        timeout=60), "o no emulado nao ficou saudavel"
 
-    task_id = client.submit("pi", params={"steps": "14", "per_step": "30000"})
+    task_id = None
+    origem = None
+    for _ in range(4):
+        candidato = client.submit("pi", params={"steps": "14", "per_step": "30000"})
+        chave = "minigrid/tasks/" + candidato + "/checkpoint"
+        if not wait_until(lambda: consul.kv_get(chave) is not None, timeout=180):
+            continue
+        estado = client.status(candidato)
+        if _familia_de_arquitetura(estado["arch"]) == "x86":
+            task_id, origem = candidato, estado
+            break
+
+    if task_id is None:
+        pytest.skip("a tarefa nao caiu no no emulado em 4 tentativas; outro no "
+                    "(provavelmente a VM de processo do host) consumiu a fila")
+
     chave = "minigrid/tasks/" + task_id + "/checkpoint"
-    assert wait_until(lambda: consul.kv_get(chave) is not None, timeout=180)
-
-    origem = client.status(task_id)
-    assert origem["arch"] == "x86_64", (
-        "esperava a tarefa comecar no no emulado, comecou em " + str(origem["arch"])
-    )
     passo_na_queda = json.loads(consul.kv_get(chave).decode())["n"]
+    assert passo_na_queda >= 1
 
-    # Agora só o nativo: a retomada é obrigatoriamente noutra arquitetura.
+    # Agora o nativo entra e o emulado sai: a retomada muda de arquitetura.
     _compose("start", "worker-b", timeout=300)
     _compose("stop", "worker-a", timeout=300)
 
@@ -470,10 +580,14 @@ def test_e_migracao_atravessa_arquiteturas_diferentes(client, consul, restaura_s
         lambda: client.status(task_id)["state"] in ("done", "failed"), timeout=300)
     final = client.status(task_id)
     assert final["state"] == "done", final["error"]
-    assert final["arch"] == "aarch64", (
-        "a retomada nao mudou de arquitetura: " + str(final["arch"])
+    assert _familia_de_arquitetura(final["arch"]) != _familia_de_arquitetura(origem["arch"]), (
+        "a retomada nao mudou de familia de arquitetura: comecou em %s, "
+        "terminou em %s" % (origem["arch"], final["arch"])
     )
-    assert final["resumed_from_step"] >= passo_na_queda
+    assert final["resumed_from_step"] >= passo_na_queda, (
+        "retomou do passo %d, mas o checkpoint estava em %d"
+        % (final["resumed_from_step"], passo_na_queda)
+    )
     assert json.loads(client.result(task_id))["steps"] == 14
 
 
@@ -536,12 +650,25 @@ def test_f_cliente_absorve_a_queda_do_lider_sem_erro(consul, restaura_stack):
     """Transparência de falhas: a aplicação não vê erro, vê uma pausa."""
     from minigrid.client import MiniGridClient
 
+    # Precondição: a réplica sobrevivente precisa estar pronta para assumir.
+    # Sem isto o teste mediria o tempo de boot do Docker em vez do failover do
+    # MiniGrid — e falharia por um motivo que não é o que ele investiga.
+    assert wait_until(lambda: _replica_responde(COORD1) and _replica_responde(COORD2),
+                      timeout=120), "as duas replicas precisam estar de pe antes"
+
     cliente = MiniGridClient(consul_url=CONSUL_URL)
     try:
         cliente.submit("pi", params={"steps": "1"})
         atual = _leader_address(consul)
-        nome = "minigrid-coord-1" if atual.endswith("50051") else "minigrid-coord-2"
-        subprocess.run(["docker", "kill", nome], capture_output=True, check=True)
+        if atual.endswith("50051"):
+            vitima, sobrevivente = "minigrid-coord-1", COORD2
+        else:
+            vitima, sobrevivente = "minigrid-coord-2", COORD1
+        subprocess.run(["docker", "kill", vitima], capture_output=True, check=True)
+        assert _replica_responde(sobrevivente), (
+            "a replica sobrevivente parou de atender; o teste nao tem como "
+            "distinguir failover de indisponibilidade total"
+        )
         # Sem tratar exceção de propósito: se o cliente não absorver, o teste
         # falha com o erro que a aplicação teria visto.
         assert cliente.submit("pi", params={"steps": "1"})
